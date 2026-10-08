@@ -1,0 +1,37 @@
+name: mapzone_speed_alert
+description: "MapZone Speed Alert SDK for Flutter: real-time speed-limit, camera, toll and road-restriction alerts with voice, for Android and iOS."
+version: 1.0.0
+homepage: https://map.zone
+repository: https://github.com/mapzone-global/mapzone-speed-alert-flutter
+issue_tracker: https://github.com/mapzone-global/mapzone-speed-alert-flutter/issues
+
+topics:
+  - speed-alert
+  - navigation
+  - mapzone
+  - geolocation
+  - adas
+
+environment:
+  sdk: ^3.8.0
+  flutter: '>=3.3.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  plugin_platform_interface: ^2.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+# The following section is specific to Flutter packages.
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.mapzone.mapzone_speed_alert
+        pluginClass: MapzoneSpeedAlertPlugin
+      ios:
+        pluginClass: MapzoneSpeedAlertPlugin

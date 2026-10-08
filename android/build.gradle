@@ -1,0 +1,76 @@
+group = "com.mapzone.mapzone_speed_alert"
+version = "1.0.0"
+
+buildscript {
+    ext.kotlin_version = "2.2.20"
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.11.1")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version")
+    }
+}
+
+allprojects {
+    repositories {
+        // Local build of the MapZone Speed Alert SDK, for unreleased changes only
+        // (tool/sync_sdk.sh publishes it to ~/.m2):
+        // mavenLocal()
+        google()
+        mavenCentral()
+        // JitPack hosts the published MapZone Speed Alert SDK. Gradle resolves the
+        // app's runtime classpath with the app's repositories, so host apps must
+        // declare JitPack too (see README).
+        maven { url 'https://jitpack.io' }
+    }
+}
+
+apply plugin: "com.android.library"
+apply plugin: "kotlin-android"
+
+android {
+    namespace = "com.mapzone.mapzone_speed_alert"
+
+    compileSdk = 36
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main.java.srcDirs += "src/main/kotlin"
+        test.java.srcDirs += "src/test/kotlin"
+    }
+
+    defaultConfig {
+        minSdk = 24
+    }
+
+    dependencies {
+        // MapZone Speed Alert SDK, published on JitPack.
+        implementation 'com.github.mapzone-global:mapzone_speed_alert_android:2.0.6'
+
+        testImplementation("org.jetbrains.kotlin:kotlin-test")
+        testImplementation("org.mockito:mockito-core:5.0.0")
+    }
+
+    testOptions {
+        unitTests.all {
+            useJUnitPlatform()
+
+            testLogging {
+               events "passed", "skipped", "failed", "standardOut", "standardError"
+               outputs.upToDateWhen {false}
+               showStandardStreams = true
+            }
+        }
+    }
+}
