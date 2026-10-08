@@ -52,12 +52,11 @@ class MapZoneSpeedAlert with WidgetsBindingObserver {
     required VehicleType vehicleType,
     required int seats,
     required int weight,
-  }) =>
-      _platform.configureVehicle(
-        vehicleType: vehicleType,
-        seats: seats,
-        weight: weight,
-      );
+  }) => _platform.configureVehicle(
+    vehicleType: vehicleType,
+    seats: seats,
+    weight: weight,
+  );
 
   /// Start native GPS capture and begin producing alerts (Approach A).
   Future<void> start() => _platform.start();
@@ -80,15 +79,14 @@ class MapZoneSpeedAlert with WidgetsBindingObserver {
     required double speedKmh,
     double accuracy = 0,
     int? fixTimeMillis,
-  }) =>
-      _platform.processExternalLocation(
-        lat: lat,
-        lng: lng,
-        bearing: bearing,
-        speedKmh: speedKmh,
-        accuracy: accuracy,
-        fixTimeMillis: fixTimeMillis,
-      );
+  }) => _platform.processExternalLocation(
+    lat: lat,
+    lng: lng,
+    bearing: bearing,
+    speedKmh: speedKmh,
+    accuracy: accuracy,
+    fixTimeMillis: fixTimeMillis,
+  );
 
   /// Lightweight zone-cache warm-up (native 2-arg `updateLocation`).
   Future<void> updateZoneLocation(double lat, double lng) =>
@@ -115,8 +113,9 @@ class MapZoneSpeedAlert with WidgetsBindingObserver {
 
   /// Removed from the native SDK; always returns `null`.
   @Deprecated(
-      'Removed from the native SDK; always returns null. Will be deleted in a '
-      'future major release.')
+    'Removed from the native SDK; always returns null. Will be deleted in a '
+    'future major release.',
+  )
   Future<List<List<double>>?> getLinkCoords(int linkId) async => null;
 
   // MARK: - Permissions

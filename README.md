@@ -1,296 +1,442 @@
 # mapzone_speed_alert
 
-Flutter plugin for the **MapZone Speed Alert SDK**. It delivers real-time
-speed-limit signs, over-speed status, upcoming signs, speed-camera and toll-gate
-alerts, road-restriction signs, and voice warnings — for Android and iOS — behind a single Dart API.
+Speed-limit, camera, toll and road-restriction alerts with voice **around the
+vehicle's position**, for Flutter apps on Android and iOS — no route needed.
 
-The plugin wraps the native Speed Alert engine, pulled automatically from the
-published native packages:
-
-- **Android:** `com.github.mapzone-global:mapzone_speed_alert_android:2.0.6` (JitPack)
-- **iOS:** `MapZoneSpeedAlertSDK` `2.0.5` (CocoaPods)
-
-> Upgrading from `mapzone_flutter_alert_plugin` 0.0.x? See
-> [Migrating from 0.0.x](#migrating-from-mapzone_flutter_alert_plugin-00x).
-
-## Table of Contents
-
-- [Features](#features)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Android Setup](#android-setup)
-- [iOS Setup](#ios-setup)
-- [Quick Start](#quick-start)
-- [GPS modes](#gps-modes)
-- [Voice playback](#voice-playback)
-- [Muting voice categories](#muting-voice-categories)
-- [Road-restriction signs](#road-restriction-signs)
-- [Vehicle types](#vehicle-types)
-- [Error codes](#error-codes)
-- [API Reference](#api-reference)
-- [Migrating from 0.0.x](#migrating-from-mapzone_flutter_alert_plugin-00x)
-- [Example](#example)
-- [License](#license)
-
-## Features
-
-- 🚦 Current speed-limit sign + compliance status (compliant / approaching / exceeding)
-- ⏭️ Next sign, speed camera and toll gate with distance-to-go
-- 🚫 Road-restriction signs: no stopping / parking, closed road, vehicle ban,
-  built-up area (`onRestriction`)
-- 🔊 Voice alerts played by the SDK's built-in player — or, while you listen to
-  `onVoice`, WAV clips forwarded to Flutter with trigger + priority
-- 🗣️ Full spoken phrases or short ding tones (`setVoiceProfile`), adjustable
-  playback speed (`setVoiceSpeed`)
-- 🔇 Per-category voice muting (`setMutedAlertTypes`); muting a camera / toll
-  category also hides its on-screen sign
-- 📍 Two GPS modes:
-  - **Standalone:** the plugin captures native GPS and drives the engine
-  - **Injected:** feed navigation-snapped GPS via `processExternalLocation()`
-- 🖼️ Sign images delivered as PNG bytes with native change-detection caching
-  (no re-encoding every frame)
+The plugin loads road data for the zone the vehicle is in, matches each GPS fix
+to the road, and returns ready-to-draw sign images plus voice alerts. GPS comes
+either from the plugin itself or from your own navigation SDK.
 
 ## Requirements
 
-| Platform | Minimum |
-|----------|---------|
-| Android  | `minSdk 24`, JitPack repository (see [Android Setup](#android-setup)) |
-| iOS      | `iOS 14.0` (raise to 15.0 if your app also uses a navigation SDK that requires it) |
+| | Minimum |
+|---|---|
+| Flutter | 3.32 |
+| Dart | 3.8 |
+| Android | `minSdk` 24, compiled against SDK 36 |
+| iOS | 14.0 |
+| Network | Internet access to the alert service |
+
+The plugin pulls the native engine automatically:
+Android `com.github.mapzone-global:mapzone_speed_alert_android:2.0.6` (JitPack),
+iOS `MapZoneSpeedAlertSDK` `2.0.5` (CocoaPods).
+
+The plugin does **not** draw a map. In mode A it captures GPS and can request
+location permission for you; in mode B your app owns GPS and permissions.
+
+## Getting an integration key
+
+Contact MapZone on [MapZone](https://zalo.me/3189066936017422854) — and provide:
+
+- the **application id** of every build that will call the service
+  (Android package name / iOS bundle id), including debug or flavour ids such
+  as `com.example.app.debug` if you run them;
+- the kind of vehicles you will configure (see [Vehicle types](#vehicle-types)).
+
+You will receive the `apiKeyId` and `apiKey` used in
+[`AlertConfig`](#alertconfig).
+
+### Application id
+
+The service authenticates your app by its **exact** application id, resolved
+natively — you do not pass it in Dart. On Android this is the installed
+`applicationId` including any `applicationIdSuffix` or flavour suffix; on iOS it
+is `CFBundleIdentifier`. A build whose id is not registered for the key is
+rejected with error [`2003`](#error-codes). Either register that id as well, or
+run the build whose id is registered.
+
+Keep `apiKey` out of source control (e.g. a git-ignored Dart file,
+`--dart-define`, or your secrets pipeline).
 
 ## Installation
 
-Add the plugin to your app:
-
-```bash
-flutter pub add mapzone_speed_alert
+```yaml
+dependencies:
+  mapzone_speed_alert: ^1.0.0
 ```
 
-The native Speed Alert SDK (Android 2.0.6 / iOS 2.0.5) is declared by the plugin and resolved
-automatically — you do **not** build it yourself. You only need to make the two
-package hosts reachable from your app (below).
+### Android
 
-## Android Setup
+The native SDK is hosted on JitPack, and Gradle resolves it with **your app's**
+repositories, so JitPack must be declared in the app project.
 
-The Android SDK is hosted on JitPack, so your app must declare that repository.
-In modern Gradle the repository has to be added by the **app**, not the plugin —
-add it to your `android/settings.gradle` (or `android/build.gradle`):
+If your project declares repositories in `android/build.gradle.kts`:
 
 ```kotlin
-// android/settings.gradle(.kts) — inside dependencyResolutionManagement { repositories { … } }
-maven { url = uri("https://jitpack.io") }
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("https://jitpack.io") }
+    }
+}
 ```
 
-Permissions are already declared by the plugin (listed here for reference):
+If it uses `dependencyResolutionManagement` in `android/settings.gradle.kts`:
+
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("https://jitpack.io") }
+    }
+}
+```
+
+Ensure `minSdk` is at least 24. The plugin's manifest already declares the
+permissions it needs, merged into your app automatically:
 `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `INTERNET`,
 `ACCESS_NETWORK_STATE`, `WAKE_LOCK`, `FOREGROUND_SERVICE`,
 `FOREGROUND_SERVICE_LOCATION`.
 
-The SDK authenticates with the **installed** `applicationId`, including any
-`applicationIdSuffix` or flavor suffix (e.g. `com.foo.debug`). The auth server
-accepts only the exact id registered for the API key, so build variants with a
-different id fail with error `2003`.
+### iOS
 
-## iOS Setup
+Set the platform to iOS 14.0 or later in `ios/Podfile` (raise it to 15.0 if
+another SDK in your app, such as a navigation SDK, requires it), then:
 
-The iOS SDK is a published CocoaPods pod, so a plain `pod install` resolves it —
-no extra source needed.
+```sh
+cd ios && pod install
+```
 
-Add the location usage descriptions to `ios/Runner/Info.plist`:
+The `MapZoneSpeedAlertSDK` pod is resolved automatically. Add the location
+usage descriptions to `ios/Runner/Info.plist`:
 
 ```xml
 <key>NSLocationWhenInUseUsageDescription</key>
-<string>Used to provide real-time speed alerts.</string>
+<string>Your location is used to show speed limits and road alerts.</string>
 <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 <string>Keeps speed alerts running while you drive.</string>
 <key>UIBackgroundModes</key>
 <array><string>location</string></array>
 ```
 
-Set the app deployment target to **14.0** in `ios/Podfile`:
+## Integration guide
 
-```ruby
-platform :ios, '14.0'
-```
-
-## Quick Start
+### 1. Initialize once
 
 ```dart
+import 'dart:async';
+
 import 'package:mapzone_speed_alert/mapzone_speed_alert.dart';
 
 final alert = MapZoneSpeedAlert.instance;
 
-// 1. Configure the engine. The app's own bundle id / applicationId is read
-//    natively and must match the id registered for the API key.
-//    A non-https baseUrl throws PlatformException(CONFIGURE_FAILED).
 await alert.initialize(const AlertConfig(
   baseUrl: 'https://driving.map.zone',
-  apiKeyId: 'YOUR_API_KEY_ID',
-  apiKey: 'YOUR_API_KEY',
-  vehicleId: 'YOUR_VEHICLE_ID',
-  vehicleType: VehicleType.car, // car=1, motorcycle=2, truck=3, … emergency=9
+  apiKeyId: 'your-api-key-id',        // from MapZone
+  apiKey: 'your-api-key',             // from MapZone
+  vehicleId: 'your-vehicle-id',       // your own identifier for this vehicle
+  vehicleType: VehicleType.car,       // see "Vehicle types"
   seats: 4,
-  weight: 1500, // kg (int)
+  weight: 1500,                       // kg
 ));
+```
 
-// 2. Listen to the alert streams.
-alert.onReady.listen((r) => print('ready: ${r.linkCount} links'));
-alert.onAlert.listen((e) {
-  // e.currentSpeedLimitSign is Uint8List? PNG -> Image.memory(...)
-  // e.speedStatus, e.nextDistanceMeters, e.cameraDistanceMeters, e.tollDistanceMeters
-});
-alert.onRestriction.listen((r) {
-  // r.stop / r.closed / r.vehicle / r.bua are Uint8List? PNGs (+ distances)
-});
-// Voice is spoken by the SDK. To play it yourself instead, listen to onVoice:
-// alert.onVoice.listen((v) => playWav(v.wav, v.priority));
-alert.onResult.listen((r) { if (!r.success) print('error ${r.errorCode}'); });
-alert.onLocation.listen((l) => print('${l.speedKmh} km/h'));
+`initialize` throws `PlatformException(CONFIGURE_FAILED)` when the native SDK
+rejects the configuration, for example a non-https `baseUrl`. Use
+`configureVehicle(...)` to change the vehicle profile later.
 
-// 3. Standalone mode — native GPS capture.
+### 2. Listen to the streams
+
+Subscribe before feeding GPS so the first event is not missed.
+
+```dart
+final subs = <StreamSubscription<Object>>[
+  alert.onAlert.listen((e) => setState(() => _alert = e)),
+  alert.onRestriction.listen((e) => setState(() => _restriction = e)),
+  alert.onReady.listen((r) => debugPrint('zone ready: ${r.linkCount} links')),
+  alert.onResult.listen((r) {
+    if (!r.success) debugPrint('alert ${r.errorCode}: ${r.errorMessage}');
+  }),
+];
+```
+
+Listen to `onVoice` only if you play clips yourself — see
+[Voice alerts](#voice-alerts).
+
+### 3. Provide GPS
+
+Pick **one** mode.
+
+**Mode A — standalone.** The plugin captures native GPS. Best when the alert
+engine is the only thing that needs location.
+
+```dart
 if (await alert.requestLocationPermissions()) {
   await alert.start();
 }
-
-// 4. Tear down.
-await alert.stop();
-await alert.reset();
+alert.onLocation.listen((l) => debugPrint('${l.speedKmh} km/h'));
 ```
 
-Register `alert.registerLifecycleObserver()` once to forward
-background/foreground transitions to the engine.
-
-## GPS modes
-
-The engine needs a stream of GPS positions. There are two ways to provide them:
-
-- **Standalone** — call `start()` and the plugin captures native GPS itself.
-  Best when the alert engine is the only thing that needs location.
-- **Injected** — feed positions yourself with `processExternalLocation()`. Use
-  this to reuse the snapped location from a navigation SDK so the alert and the
-  map agree:
-
-  ```dart
-  await alert.processExternalLocation(
-    lat: 21.02, lng: 105.83, bearing: 90, speedKmh: 45,
-    fixTimeMillis: fix.timestampMs, // the fix's own time, epoch ms
-  );
-  ```
-
-  Pass the fix's own timestamp: the engine times voice throttling and
-  stop detection against it. When omitted, the time of the call is used.
-
-## Voice playback
-
-By default the SDK speaks alerts itself through its built-in player — no audio
-code needed.
-
-To play clips yourself (e.g. to mix them with navigation audio), listen to
-`onVoice`. While that stream has a listener the built-in player is silent and
-every clip arrives as a `VoiceEvent` (WAV PCM16 mono 22,050 Hz + trigger +
-priority). Cancel every subscription to hand playback back to the SDK; clips
-already queued in the built-in player may still finish.
+**Mode B — injected.** Feed positions yourself, about once per second. Use this
+to reuse the snapped location from a navigation SDK so the alerts and the map
+agree.
 
 ```dart
-await alert.setVoiceProfile(VoiceProfile.dingOnly); // chimes instead of speech
-await alert.setVoiceSpeed(1.25); // built-in player only; 0.5..2.0
+await alert.processExternalLocation(
+  lat: pos.latitude,
+  lng: pos.longitude,
+  bearing: pos.heading,
+  speedKmh: pos.speed < 0 ? 0 : pos.speed * 3.6,  // m/s → km/h; iOS reports -1 when unknown
+  accuracy: pos.accuracy,
+  fixTimeMillis: pos.timestamp.millisecondsSinceEpoch,
+);
 ```
 
-## Muting voice categories
+Pass the fix's own timestamp: the engine times voice throttling and stop
+detection against it. When omitted, the time of the call is used.
 
-`setMutedAlertTypes` silences specific `VoiceAlertType` categories (speed camera,
-toll, red-light camera, no-overtaking, no-stopping, road closed, rest station,
-…). Muting a **camera or toll** category also hides its on-screen sign; muting
-any other category only silences the voice (restriction signs keep showing on
-`onRestriction`). Core speed-limit and speeding cues can never be
-muted — they are safety cues and are always announced.
+### 4. Stop
 
 ```dart
-await alert.setMutedAlertTypes([VoiceAlertType.speedCamera, VoiceAlertType.toll]);
-await alert.setMutedAlertTypes([]); // re-enable all
+await alert.stop();                  // mode A: stop native GPS, engine state kept
+await alert.reset();                 // free native memory, unconfigure the engine
+for (final s in subs) { await s.cancel(); }
 ```
 
-## Road-restriction signs
+`reset()` also stops native GPS and unconfigures the engine: call
+`initialize` again before `start()` or `processExternalLocation`, which are
+otherwise rejected or ignored.
 
-`onRestriction` emits a `RestrictionEvent` holding every restriction slot at
-once — the slots are independent and can co-occur:
+### Drawing signs
 
-| Slot | Sign | Distance |
-|------|------|----------|
-| `stop` | No parking / no stopping | `stopDistMeters` |
-| `closed` | Road closed | `closedDistMeters` |
-| `vehicle` | Road closed to the configured vehicle type | `vehicleDistMeters` |
-| `bua` | Built-up area entry / end (landscape artwork) | `buaDistMeters`; `inBua` while inside |
+Every image is PNG bytes; `null` means the slot is empty. Unchanged images are
+not re-sent by the native side — each event still carries the full current
+state, so you can render the latest event directly. Use `gaplessPlayback` to
+avoid flicker:
 
-A distance of `0` means the vehicle is on that stretch now; an empty slot has a
-`null` image. Events arrive when a slot changes, and a new listener immediately
-receives the current state.
+```dart
+Widget sign(Uint8List? png, {double size = 64}) => png == null
+    ? const SizedBox.shrink()
+    : Image.memory(png, width: size, height: size, gaplessPlayback: true);
 
-## Vehicle types
+Row(children: [
+  sign(_alert?.currentSpeedLimitSign, size: 80),
+  sign(_alert?.nextSign),
+  if (_alert?.nextDistanceMeters != null) Text('${_alert!.nextDistanceMeters} m'),
+  sign(_alert?.cameraSign),
+  sign(_alert?.tollSign),
+]);
+```
 
-`VehicleType` codes match the native SDK enum:
+Use `speedStatus` to colour your own speedometer — `compliant`, `approaching`
+or `exceeding`.
 
-`car=1, motorcycle=2, truck=3, coach=4, bus=5, taxi=6, bicycle=7, pedestrian=8, emergency=9`.
+## Configuration reference
 
-Only some types support speed alerts; an unsupported type is reported through
-`onResult` with error code `3003`.
+### AlertConfig
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `baseUrl` | `String` | yes | Service base URL, must be `https`, e.g. `https://driving.map.zone`. |
+| `apiKeyId` | `String` | yes | API key id issued for your application id. |
+| `apiKey` | `String` | yes | API key secret. |
+| `vehicleId` | `String` | yes | Your identifier for the vehicle. |
+| `vehicleType` | `VehicleType` | no | Vehicle class, default `VehicleType.car`. |
+| `seats` | `int` | no | Number of seats, default `4`. |
+| `weight` | `int` | no | Vehicle weight in **kilograms**, default `1500`. |
+
+There is no bundle-id field — see [Application id](#application-id).
+
+### Vehicle types
+
+| `VehicleType` | Code |
+|---|---|
+| `car` | 1 |
+| `motorcycle` | 2 |
+| `truck` | 3 |
+| `coach` | 4 |
+| `bus` | 5 |
+| `taxi` | 6 |
+| `bicycle` | 7 |
+| `pedestrian` | 8 |
+| `emergency` | 9 |
+
+The type, seats and weight decide which speed limits apply. Not every type
+supports speed alerts; an unsupported type is reported on `onResult` with
+error [`3003`](#error-codes).
+
+### processExternalLocation
+
+| Parameter | Unit | Notes |
+|---|---|---|
+| `lat`, `lng` | degrees (WGS84) | Required. |
+| `bearing` | degrees | Required. `0` = north, `90` = east. |
+| `speedKmh` | km/h | Required. Never negative. |
+| `accuracy` | m | Horizontal accuracy; default `0`. |
+| `fixTimeMillis` | ms since epoch (UTC) | The fix's own time; defaults to the time of the call. |
+
+## API reference
+
+All members are on `MapZoneSpeedAlert.instance`.
+
+### Methods
+
+| Method | Description |
+|---|---|
+| `initialize(AlertConfig)` | Credentials + vehicle profile. Call once before providing GPS. |
+| `configureVehicle({vehicleType, seats, weight})` | Change the vehicle profile at runtime; mute and voice settings are kept. |
+| `start()` / `stop()` | Mode A: native GPS capture on / off. `stop` keeps engine state. |
+| `processExternalLocation(...)` | Mode B: feed one GPS fix (~1 Hz). |
+| `updateZoneLocation(lat, lng)` | Lightweight zone-cache warm-up for a position. |
+| `reset()` | Stop native GPS, free native memory and unconfigure the engine; call `initialize` again before reuse. |
+| `setMutedAlertTypes(List<VoiceAlertType>)` | Mute voice categories; empty list = announce everything. |
+| `setVoiceProfile(VoiceProfile)` | `full` phrases or `dingOnly` chimes. |
+| `setVoiceSpeed(double)` | Built-in player speed, `1.0` = recorded, clamped to `0.5..2.0`, pitch kept. No effect while `onVoice` has a listener. Persists across `reset()`. |
+| `requestLocationPermissions()` / `hasLocationPermissions()` | Runtime location permission (mode A). |
+| `registerLifecycleObserver()` / `unregisterLifecycleObserver()` | Send app background / foreground to the native side. Reserved: the current native SDK ignores them. Safe to call more than once. |
+| `getLinkCoords(linkId)` | **Deprecated** — removed from the native SDK, always returns `null`. |
+
+### Streams
+
+| Stream | Payload | When |
+|---|---|---|
+| `onAlert` | `AlertEvent` | Once per processed GPS fix. |
+| `onRestriction` | `RestrictionEvent` | When a slot changes; a new listener immediately receives the current state. |
+| `onVoice` | `VoiceEvent` | Per clip, **only while listened to** — the built-in player is silent for that time. |
+| `onReady` | `ReadyEvent` | Zone data loaded for the current area. |
+| `onResult` | `AlertResult` | Outcome of each zone load, and native failures. |
+| `onLocation` | `AlertLocation` | Each native GPS fix (mode A). |
+
+Distances are in metres. A distance of `0` means "currently on it".
+
+#### AlertEvent
+
+| Field | Type | Description |
+|---|---|---|
+| `currentSpeedLimitSign` | `Uint8List?` | Current speed-limit sign; `null` when none applies. |
+| `speedStatus` | `SpeedStatus` | `compliant`, `approaching` (close to the limit) or `exceeding`. |
+| `nextSign` / `nextDistanceMeters` | `Uint8List?` / `int?` | Next speed-limit sign ahead and its distance. |
+| `cameraSign` / `cameraDistanceMeters` | `Uint8List?` / `int?` | Upcoming speed camera. |
+| `tollSign` / `tollDistanceMeters` | `Uint8List?` / `int?` | Upcoming toll gate. |
+
+#### RestrictionEvent
+
+The slots are independent: one stretch of road can be in a built-up area,
+closed to your vehicle and no-stopping at once.
+
+| Field | Type | Description |
+|---|---|---|
+| `stop` / `stopDistMeters` | `Uint8List?` / `int` | No-parking / no-stopping sign. |
+| `closed` / `closedDistMeters` | `Uint8List?` / `int` | Road-closed sign. |
+| `vehicle` / `vehicleDistMeters` | `Uint8List?` / `int` | Road closed to the configured vehicle type. |
+| `bua` / `buaDistMeters` | `Uint8List?` / `int` | Built-up-area sign: the entry sign while inside, then the end-of-area sign after leaving. Landscape artwork, not a circle. |
+| `inBua` | `bool` | Whether the vehicle is inside a built-up area. |
+
+#### VoiceEvent
+
+| Field | Type | Description |
+|---|---|---|
+| `wav` | `Uint8List` | WAV clip, PCM 16-bit mono 22050 Hz. |
+| `trigger` | `int` | Native trigger code of the announcement (see `VoiceAlertType.trigger`). |
+| `priority` | `int` | `0` current speed (lowest), `1` normal, `2` speeding. |
+
+#### ReadyEvent, AlertResult and AlertLocation
+
+`ReadyEvent`: `isReady`, `linkCount` (road links loaded), `alertCount` (cameras,
+tolls and sign changes loaded).
+
+`AlertResult`: `success`, `errorCode`, `errorMessage` — see
+[Error codes](#error-codes). `isNetworkError` is `true` for negative codes.
+
+`AlertLocation`: `latitude`, `longitude`, `speedKmh`, `bearing`, and optional
+`accuracy` (m) and `timestamp` (ms since epoch).
+
+## Voice alerts
+
+### Built-in player or your own
+
+By default the native SDK speaks alerts through its built-in player — nothing
+to do. To play clips yourself (mixing with navigation audio, custom ducking…),
+listen to `onVoice`:
+
+```dart
+final voiceSub = alert.onVoice.listen((v) => myPlayer.play(v.wav, v.priority));
+// Later: cancel every onVoice subscription to hand playback back to the SDK.
+await voiceSub.cancel();
+```
+
+Use `priority` to decide whether a new clip interrupts the current one. Clips
+already queued in the built-in player may still finish after you subscribe.
+
+### Voice profile
+
+```dart
+await alert.setVoiceProfile(VoiceProfile.dingOnly);
+```
+
+- `VoiceProfile.full` (default): full spoken Vietnamese phrases.
+- `VoiceProfile.dingOnly`: one chime for every camera kind and for
+  no-parking / no-stopping, a distinct chime for speeding, silence for
+  everything else.
+
+On-screen signs are identical in both profiles, and muted categories stay
+silent in both.
+
+### Muting categories
+
+```dart
+await alert.setMutedAlertTypes([VoiceAlertType.toll, VoiceAlertType.noParking]);
+await alert.setMutedAlertTypes([]);  // announce everything again
+```
+
+- Speed-limit and speeding announcements **cannot** be muted.
+- Muting a camera or toll category **also hides its sign** — there is a single
+  slot for each.
+- Muting a restriction category silences the voice only; the sign still shows
+  on `onRestriction`.
+
+| `VoiceAlertType` | Code | Muting also hides the sign |
+|---|---|---|
+| `speedCamera` | 3 | yes |
+| `toll` | 4 | yes |
+| `trafficEnforcementCamera` | 6 | yes |
+| `redLightCamera` | 7 | yes |
+| `aiCamera` | 8 | yes |
+| `noLeftTurn`, `noRightTurn`, `noUTurn`, `noStraight` | 9, 10, 11, 15 | no |
+| `noOvertaking`, `noOvertakingEnd` | 12, 13 | no |
+| `noParking`, `noStopping` | 14, 19 | no |
+| `buildUpAreaStart`, `buildUpAreaEnd` | 16, 17 | no |
+| `restStation` | 18 | no |
+| `roadClosed` | 20 | no |
+| `vehicleRestricted` | 21 | no |
 
 ## Error codes
 
-`AlertResult.errorCode`:
+Reported in `AlertResult.errorCode`. `errorMessage` is an English sentence
+derived from the code — localise off the code.
 
-`0` success · `1001` invalid parameter (e.g. coordinates out of bounds) ·
-`2003` unauthorized (expired key, bundle id / vehicle out of scope) ·
-`3003` unsupported vehicle type · `-1` response could not be verified ·
-`-2` payload unusable · `-3` secure session failed · `-4` server unreachable ·
-`-5` native bridge failed (e.g. rejected configuration, missing ABI).
-`errorMessage` is an English sentence derived from the code — localise off the
-code.
+| Code | Meaning | What to check |
+|---|---|---|
+| `0` | Success | |
+| `1001` | Invalid parameter | Coordinates out of bounds or other bad input. |
+| `2003` | Unauthorized | Key expired, or application id / vehicle not in the key's scope — see [Application id](#application-id). |
+| `3003` | Unsupported vehicle type | `AlertConfig.vehicleType`. |
+| `-1` | Response could not be verified | Retry; contact MapZone if it persists. |
+| `-2` | Payload unusable | Retry; contact MapZone if it persists. |
+| `-3` | Secure session failed | Retry; contact MapZone if it persists. |
+| `-4` | Server unreachable | Network connection and `baseUrl`. |
+| `-5` | Native bridge failed | Rejected configuration or missing native ABI. |
 
-## API Reference
+## Example app
 
-| Method | Description |
-|--------|-------------|
-| `initialize(AlertConfig)` | Configure the native engine |
-| `configureVehicle(...)` | Re-configure with a new vehicle profile (mute / voice profile kept) |
-| `start()` / `stop()` | Native GPS capture on / off (standalone mode) |
-| `processExternalLocation(..., fixTimeMillis)` | Inject a GPS frame (injected mode) |
-| `updateZoneLocation(lat, lng)` | Lightweight zone-cache warm-up |
-| `setMutedAlertTypes(List<VoiceAlertType>)` | Mute voice per category |
-| `setVoiceProfile(VoiceProfile)` | Full phrases or ding tones |
-| `setVoiceSpeed(double)` | Built-in player speed |
-| `getLinkCoords(linkId)` | **Deprecated** — removed from the native SDK, always `null` |
-| `reset()` | Free native memory |
-| `requestLocationPermissions()` / `hasLocationPermissions()` | Runtime permissions |
-| `registerLifecycleObserver()` / `unregisterLifecycleObserver()` | App lifecycle forwarding |
+[`example/`](example) is a single-screen demo built on
+`vietmap_flutter_navigation` that shows both GPS modes:
 
-**Event streams**
+- **No destination — mode A:** `start()` captures raw GPS, no route.
+- **Destination picked — mode B:** search a destination, build and draw the
+  route, then drive it (simulated by default; toggle in the settings dialog).
+  The snapped GPS is fed in with `processExternalLocation`.
 
-| Stream | Payload |
-|--------|---------|
-| `onAlert` | Speed-limit / next-sign / camera / toll signs (PNG) + distances + speed status |
-| `onVoice` | Voice clip: WAV bytes + trigger + priority (listening silences the built-in player) |
-| `onRestriction` | Restriction signs (PNG) + distances + `inBua` |
-| `onReady` | Zone loaded: `linkCount`, `alertCount` |
-| `onResult` | Success flag + `errorCode` + message |
-| `onLocation` | Current `latitude` / `longitude` / `speedKmh` / `bearing` |
+Speed-limit, camera and toll signs render as a HUD, a speed chip shows the
+speed status with the restriction signs under it, and a floating button mutes
+voice categories. The example plays voice clips itself by listening to
+`onVoice` (priority queue on `audioplayers`, see
+[`example/lib/voice_queue.dart`](example/lib/voice_queue.dart)). The vehicle
+profile is set from the settings dialog.
 
-## Example
-
-See [`example/`](example/) for a single-screen demo app: a map screen with a
-**destination search box** (autocomplete / place **v4**). Pick a destination →
-the route is built and drawn → start simulated navigation; the snapped GPS is
-fed into the engine via
-`processExternalLocation`, the speed-limit / camera / toll signs render as a HUD,
-a speed chip shows the over-speed status with the restriction signs under it,
-and a floating button configures voice
-muting per `VoiceAlertType`. Vehicle profile and route simulation are set from a
-settings dialog.
-
-> The route / map is drawn by the example's own navigation SDK — this alert
-> plugin does not render maps; it only consumes GPS and emits sign / voice
-> events.
-
-Fill your Speed Alert credentials (and the map API key) in
+Fill your Speed Alert credentials and the map API key in
 `example/lib/env.dart` before running.
 
 ## Migrating from mapzone_flutter_alert_plugin 0.0.x
@@ -307,6 +453,12 @@ Fill your Speed Alert credentials (and the map API key) in
    listened to `onVoice` without playing, remove the listener to hear the SDK.
 6. `getLinkCoords` always returns `null` now (removed from the native SDK).
 7. Optionally pass `fixTimeMillis` to `processExternalLocation`.
+
+## Support
+
+- Integration key and commercial questions: [MapZone](https://zalo.me/3189066936017422854)
+- Bugs and feature requests:
+  [GitHub issues](https://github.com/mapzone-global/mapzone-speed-alert-flutter/issues)
 
 ## License
 
