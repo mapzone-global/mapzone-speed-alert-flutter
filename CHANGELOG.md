@@ -39,6 +39,15 @@ Native SDK 3.0.0: signed-in sessions. See the README section *Migrating from
 * Native SDK: Android `mapzone_speed_alert_android` `3.0.0` (JitPack), iOS
   `MapZoneSpeedAlertSDK` `3.0.0` (CocoaPods).
 * The plugin no longer logs the vehicle id / identity on configure.
+* Android native GPS capture (`start()`): Fused Location when Play Services is
+  usable, otherwise the OS `gps` + `network` providers (network only while GPS
+  is silent), instead of the `gps` provider alone — fixes now arrive indoors.
+  Without a heading, or below 1 m/s, the last heading is kept instead of `0`.
+  Adds a dependency on `play-services-location` 21.3.0. iOS unchanged.
+  `start()` now fails with `NO_LOCATION_SERVICE` when no source can start
+  (was `LOCATION_ERROR`); a source lost after a successful start is reported on
+  `onResult` with code `-1`, as on iOS. Coordinates are logged only in
+  debuggable builds.
 * Example app: identity field and sign-out in the settings dialog, a
   "signed in elsewhere" dialog on `2006`, weight in tonnes, the six vehicle
   types.

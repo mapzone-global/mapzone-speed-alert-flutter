@@ -1,14 +1,12 @@
 package com.mapzone.mapzone_speed_alert
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -46,7 +44,8 @@ import java.util.concurrent.Executors
  * whole lifetime: `initialize` / `configureVehicle` reset and re-configure it
  * instead of building a new one.
  *
- * GPS is captured with the Android framework [LocationManager].
+ * GPS (Approach A) is captured by [PluginLocationCapture]: Fused Location when
+ * Play Services is usable, otherwise the OS `gps` + `network` providers.
  *
  * Voice: the SDK plays clips through its built-in player until Dart listens to
  * the `voice` channel; while that listener exists the clips are forwarded to
@@ -59,8 +58,6 @@ class MapzoneSpeedAlertPlugin :
         const val CHANNEL = "mapzone_speed_alert"
         const val TAG = "MapZoneSpeedAlert"
         const val PERMISSION_REQUEST_CODE = 4021
-        const val MIN_TIME_MS = 1000L
-        const val MIN_DISTANCE_M = 0f
     }
 
     private lateinit var appContext: Context
@@ -84,8 +81,13 @@ class MapzoneSpeedAlertPlugin :
     private lateinit var restrictionStream: CallbackStream
     private lateinit var snappedLocationStream: CallbackStream
 
-    private var systemLocationManager: LocationManager? = null
-    private var locationListener: LocationListener? = null
+    // Native GPS capture (Approach A) and the heading it last sent.
+    private var locationCapture: PluginLocationCapture? = null
+    private var bearingHold = BearingHold()
+
+    private val isDebuggable: Boolean by lazy {
+        (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    }
 
     // Whether this engine configured the native engine. Flutter attaches the
     // plugin to every engine (background isolates too), so teardown must only
@@ -485,7 +487,6 @@ class MapzoneSpeedAlertPlugin :
 
     // MARK: - GPS capture (Approach A)
 
-    @SuppressLint("MissingPermission")
     private fun startTracking(result: Result) {
         if (!configured) {
             result.error("NOT_INITIALIZED", "Call initialize() before start().", null)
@@ -496,51 +497,54 @@ class MapzoneSpeedAlertPlugin :
             return
         }
         stopLocationUpdates()
-        val lm = appContext.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
-        if (lm == null) {
-            result.error("NO_LOCATION_SERVICE", "LocationManager unavailable.", null)
-            return
+        // A new run starts from no heading, like the engine after reset.
+        bearingHold = BearingHold()
+        if (appContext.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "Only approximate location granted: fixes will be coarse, without speed or heading")
         }
-        val listener = object : LocationListener {
-            override fun onLocationChanged(location: Location) = handleLocation(location)
-            override fun onProviderEnabled(provider: String) {}
-            override fun onProviderDisabled(provider: String) {}
-
-            @Deprecated("Deprecated in Java")
-            override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {
-            }
-        }
-        try {
-            lm.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER, MIN_TIME_MS, MIN_DISTANCE_M,
-                listener, Looper.getMainLooper()
+        val capture = PluginLocationCapture(appContext, ::handleLocation) {
+            // Same channel and code as the iOS plugin's location error.
+            resultStream.send(
+                resultMap(false, -1, "No location source is available on this device.")
             )
-        } catch (e: Exception) {
-            result.error("LOCATION_ERROR", e.message, null)
+        }
+        if (!capture.start()) {
+            result.error("NO_LOCATION_SERVICE", "No location source could be started.", null)
             return
         }
-        systemLocationManager = lm
-        locationListener = listener
+        locationCapture = capture
         result.success(null)
     }
 
     private fun handleLocation(location: Location) {
         val lat = location.latitude
         val lng = location.longitude
-        val bearing = location.bearing.toDouble()
-        val accuracy = location.accuracy.toDouble()
-        // Location.speed is m/s; the SDK expects km/h.
-        val speed = location.speed.toDouble() * 3.6
-        Log.d(TAG, "gps lat=$lat lng=$lng spd=$speed acc=$accuracy")
-        mgr.updateLocation(lat, lng, speed, bearing)
+        // A fix without speed reports 0 for it anyway, but say so explicitly:
+        // the same goes for bearing, where 0 is a real heading (north).
+        val speedMetersPerSecond = if (location.hasSpeed()) location.speed.toDouble() else 0.0
+        val speedKmh = speedMetersPerSecond * 3.6
+        val bearing = bearingHold.bearingFor(
+            location.hasBearing(), location.bearing.toDouble(), speedMetersPerSecond
+        )
+        val accuracy = if (location.hasAccuracy()) location.accuracy.toDouble() else 0.0
+        // Coordinates only in debuggable builds: release logs carry no location.
+        if (isDebuggable) {
+            Log.d(
+                TAG,
+                "gps provider=${location.provider} lat=$lat lng=$lng spd=$speedKmh acc=$accuracy"
+            )
+        }
+        mgr.updateLocation(lat, lng, speedKmh, bearing)
         // The engine times voice throttling and stop detection against the
         // fix's own clock, never the time this callback ran.
-        mgr.processGps(lat, lng, bearing, speed, accuracy, location.time)
+        mgr.processGps(lat, lng, bearing, speedKmh, accuracy, location.time)
         locationStream.send(
             mapOf(
                 "lat" to lat,
                 "lng" to lng,
-                "speedKmh" to speed,
+                "speedKmh" to speedKmh,
                 "bearing" to bearing,
                 "accuracy" to accuracy,
                 "timestamp" to location.time
@@ -549,9 +553,8 @@ class MapzoneSpeedAlertPlugin :
     }
 
     private fun stopLocationUpdates() {
-        locationListener?.let { systemLocationManager?.removeUpdates(it) }
-        locationListener = null
-        systemLocationManager = null
+        locationCapture?.stop()
+        locationCapture = null
     }
 
     // MARK: - Permissions

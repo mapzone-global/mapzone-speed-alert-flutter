@@ -209,6 +209,21 @@ if (await alert.requestLocationPermissions()) {
 alert.onLocation.listen((l) => debugPrint('${l.speedKmh} km/h'));
 ```
 
+Where the fixes come from:
+
+- **Android:** Google's Fused Location (GPS + Wi-Fi + cell, so it also works
+  indoors) when Play Services is usable on the device. Without Play Services the
+  OS `gps` and `network` providers run together; a network fix is used only
+  once GPS has been silent for more than 5 seconds. The plugin depends on
+  `play-services-location` 21.x for this (it is not required at runtime); a
+  plugin in your app still built against 20.x or older conflicts with it.
+  Grant precise location: with only approximate location the fixes are coarse,
+  without speed or heading.
+- **iOS:** CoreLocation through the SDK's `EnhancedLocationManager`.
+- Android: when the device reports no heading, or the vehicle moves slower than
+  1 m/s, the last heading is kept instead of sending `0` (north), so the engine
+  does not snap the vehicle onto the opposite carriageway while stopped.
+
 **Mode B — injected.** Feed positions yourself, about once per second. Use this
 to reuse the snapped location from a navigation SDK so the alerts and the map
 agree.
@@ -504,8 +519,9 @@ reported **once**. Branch on the exact code — ranges no longer have one meanin
 | `-6` | `notLoggedIn` | Nobody signed in (`logout` called, or `initialize` never was) | Stops until `initialize` |
 | `-8` | `deviceNotReady` | Device cannot be read yet (e.g. iPhone not unlocked since restart); show a notice | Pauses, retries about once a minute |
 
-On iOS, a native GPS error in mode A is also reported on `onResult` with code
-`-1` and the location error text.
+In mode A a native location failure is also reported on `onResult` with code
+`-1` (on Android: no location source left after `start()` succeeded; on iOS:
+the location error text).
 
 ## Example app
 

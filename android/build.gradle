@@ -57,6 +57,9 @@ android {
     dependencies {
         // MapZone Speed Alert SDK, published on JitPack.
         implementation 'com.github.mapzone-global:mapzone_speed_alert_android:3.0.0'
+        // Fused Location for native GPS capture (Approach A). Only used when Play
+        // Services is usable on the device; otherwise the OS providers are used.
+        implementation 'com.google.android.gms:play-services-location:21.3.0'
 
         testImplementation("org.jetbrains.kotlin:kotlin-test")
         testImplementation("org.mockito:mockito-core:5.0.0")
