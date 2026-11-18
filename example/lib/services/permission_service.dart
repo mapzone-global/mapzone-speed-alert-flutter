@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 /// Where the app stands on location permission.
@@ -53,7 +54,7 @@ class PermissionService {
     );
   }
 
-  /// Ask for foreground location, then escalate to background.
+  /// Ask for foreground location, then (iOS only) escalate to background.
   ///
   /// The two requests must be sequential and awaited. iOS only shows the
   /// "Change to Always Allow?" upgrade prompt when when-in-use is *already*
@@ -68,8 +69,13 @@ class PermissionService {
   static Future<LocationPermissionStatus> request() async {
     await Permission.locationWhenInUse.request();
 
-    if (await Permission.locationWhenInUse.isGranted) {
-      // This is the "Change to Always Allow?" prompt.
+    // defaultTargetPlatform, not Platform.isIOS, so tests can drive both
+    // branches with debugDefaultTargetPlatformOverride.
+    if (defaultTargetPlatform == TargetPlatform.iOS &&
+        await Permission.locationWhenInUse.isGranted) {
+      // This is the "Change to Always Allow?" prompt. Android 11+ answers this
+      // request by opening the full-screen Settings page instead, so there the
+      // background upgrade is left to the foreground-only snackbar's action.
       await Permission.locationAlways.request();
     }
 

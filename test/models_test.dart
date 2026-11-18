@@ -5,17 +5,26 @@ import 'package:mapzone_speed_alert/mapzone_speed_alert.dart';
 
 void main() {
   group('VehicleType', () {
-    test('matches the SDK integer codes', () {
-      expect(VehicleType.car.value, 1);
-      expect(VehicleType.motorcycle.value, 2);
-      expect(VehicleType.truck.value, 3);
-      expect(VehicleType.bicycle.value, 7);
-      expect(VehicleType.emergency.value, 9);
+    test('values are the server vehicle codes', () {
+      expect(
+        {for (final t in VehicleType.values) t: t.value},
+        {
+          VehicleType.car: 1,
+          VehicleType.taxi: 2,
+          VehicleType.bus: 3,
+          VehicleType.coach: 4,
+          VehicleType.truck: 5,
+          VehicleType.motorcycle: 7,
+        },
+      );
     });
 
-    test('fromValue resolves and falls back to car', () {
-      expect(VehicleType.fromValue(3), VehicleType.truck);
-      expect(VehicleType.fromValue(999), VehicleType.car);
+    test('fromValue reads server codes and returns null for unknown ones', () {
+      expect(VehicleType.fromValue(3), VehicleType.bus);
+      expect(VehicleType.fromValue(5), VehicleType.truck);
+      expect(VehicleType.fromValue(7), VehicleType.motorcycle);
+      expect(VehicleType.fromValue(6), isNull);
+      expect(VehicleType.fromValue(999), isNull);
     });
   });
 
@@ -94,21 +103,50 @@ void main() {
   });
 
   group('AlertConfig', () {
-    test('serializes weight as int and vehicleType as its value', () {
+    test('serializes identity, tonnes and the server vehicle code', () {
       const config = AlertConfig(
         baseUrl: 'https://x',
         apiKeyId: 'id',
         apiKey: 'key',
-        vehicleId: 'v1',
+        identity: '+84901234567',
         vehicleType: VehicleType.truck,
         seats: 2,
-        weight: 3000,
+        weightTons: 3.5,
       );
       final json = config.toJson();
-      expect(json['vehicleType'], 3);
-      expect(json['weight'], 3000);
-      expect(json['weight'], isA<int>());
+      expect(json['identity'], '+84901234567');
+      expect(json['vehicleType'], 5);
+      expect(json['weightTons'], 3.5);
+      expect(json['metadata'], isNull);
+      expect(json.containsKey('vehicleId'), isFalse);
+      expect(json.containsKey('weight'), isFalse);
       expect(json.containsKey('bundleId'), isFalse);
+    });
+
+    test('encodes metadata as one JSON object', () {
+      const config = AlertConfig(
+        baseUrl: 'https://x',
+        apiKeyId: 'id',
+        apiKey: 'key',
+        identity: 'u1',
+        metadata: {'appVersion': '1.4.0', 'fleet': 7},
+      );
+      expect(config.toJson()['metadata'], '{"appVersion":"1.4.0","fleet":7}');
+    });
+
+    test('copyWith keeps the fields it is not given', () {
+      const config = AlertConfig(
+        baseUrl: 'https://x',
+        apiKeyId: 'id',
+        apiKey: 'key',
+        identity: 'u1',
+        metadata: {'a': 1},
+      );
+      final copy = config.copyWith(identity: 'u2', weightTons: 2);
+      expect(copy.identity, 'u2');
+      expect(copy.weightTons, 2);
+      expect(copy.metadata, {'a': 1});
+      expect(copy.vehicleType, VehicleType.car);
     });
   });
 
@@ -195,13 +233,35 @@ void main() {
       expect(e.alertCount, 4);
     });
 
-    test('AlertResult exposes error helpers', () {
-      final expired = AlertResult.fromJson(
-          {'success': false, 'errorCode': 2003, 'errorMessage': 'expired'});
-      expect(expired.isExpiredApiKey, isTrue);
-      final net = AlertResult.fromJson(
-          {'success': false, 'errorCode': -5, 'errorMessage': 'net'});
-      expect(net.isNetworkError, isTrue);
+    test('AlertResult parses the code and flags an unsupported vehicle', () {
+      final result = AlertResult.fromJson(
+          {'success': false, 'errorCode': 3003, 'errorMessage': 'vehicle'});
+      expect(result.success, isFalse);
+      expect(result.errorCode, MapZoneErrorCode.vehicleTypeNotAllowed);
+      expect(result.isUnsupportedVehicleType, isTrue);
+      expect(result.errorMessage, 'vehicle');
+    });
+
+    test('SnappedLocation parses coordinates and bearing', () {
+      final e = SnappedLocation.fromJson(
+          {'lat': 21.03, 'lng': 105.85, 'bearing': 270});
+      expect(e.latitude, 21.03);
+      expect(e.longitude, 105.85);
+      expect(e.bearingDegrees, 270.0);
+    });
+  });
+
+  group('MapZoneErrorCode', () {
+    test('matches the native SDK 3.0.0 codes', () {
+      expect(MapZoneErrorCode.notLoggedIn, -6);
+      expect(MapZoneErrorCode.deviceNotReady, -8);
+      expect(MapZoneErrorCode.sessionMoved, 2006);
+      expect(MapZoneErrorCode.locked, 2007);
+      expect(MapZoneErrorCode.switchTooSoon, 2008);
+      expect(MapZoneErrorCode.trialIdentityNotAllowed, 2010);
+      expect(MapZoneErrorCode.newDeviceLimit, 3012);
+      expect(MapZoneErrorCode.tooManyRequests, 4000);
+      expect(MapZoneErrorCode.requestQuotaExceeded, 4001);
     });
   });
 }

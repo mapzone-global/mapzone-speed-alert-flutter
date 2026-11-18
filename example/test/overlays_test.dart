@@ -27,6 +27,8 @@ void main() {
 
     await tester.pumpWidget(host(
       const SettingsDialog(
+        identity: '+84901234567',
+        signedIn: true,
         vehicle: VehicleProfile(),
         simulate: true,
         speedMultiplier: 2,
@@ -39,6 +41,25 @@ void main() {
     }
     // Simulator is on, so the multiplier presets are visible.
     expect(find.text('3×'), findsOneWidget);
+    // Signed in: the identity is editable and sign-out is offered.
+    expect(find.text('+84901234567'), findsOneWidget);
+    expect(find.text('Đăng xuất'), findsOneWidget);
+    expect(find.text('Trọng tải (tấn)'), findsOneWidget);
+  });
+
+  testWidgets('SettingsDialog hides sign-out when nobody is signed in',
+      (tester) async {
+    await tester.pumpWidget(host(
+      const SettingsDialog(
+        identity: '',
+        signedIn: false,
+        vehicle: VehicleProfile(),
+        simulate: false,
+        speedMultiplier: 1,
+      ),
+    ));
+    expect(find.text('Đăng xuất'), findsNothing);
+    expect(find.text('Chưa đăng nhập'), findsOneWidget);
   });
 
   testWidgets('MuteSheet lays out and locks the speed cues', (tester) async {

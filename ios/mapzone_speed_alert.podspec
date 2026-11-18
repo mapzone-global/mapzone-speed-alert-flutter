@@ -5,7 +5,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'mapzone_speed_alert'
-  s.version          = '1.0.0'
+  s.version          = '2.0.0'
   s.summary          = 'Speed-limit, camera, toll and road-restriction alerts with voice.'
   s.description      = <<-DESC
 Flutter plugin for the MapZone Speed Alert SDK: real-time speed-limit, camera,
@@ -17,7 +17,7 @@ toll and road-restriction alerts with voice for Android and iOS.
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*'
   s.dependency 'Flutter'
-  s.dependency 'MapZoneSpeedAlertSDK', '= 2.0.5'
+  s.dependency 'MapZoneSpeedAlertSDK', '= 3.0.0'
   # 14.0 is the floor for the SDK's EnhancedLocationManager APIs. Apps adding
   # Vietmap Navigation (Approach B) should raise their own deployment target.
   s.platform = :ios, '14.0'

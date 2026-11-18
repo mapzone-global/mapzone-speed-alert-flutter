@@ -28,7 +28,9 @@ import map.zone.speedalertsdk.BitmapCallback
 import map.zone.speedalertsdk.BuildupAreaCallback
 import map.zone.speedalertsdk.ReadyCallback
 import map.zone.speedalertsdk.ResultCallback
+import map.zone.speedalertsdk.SnappedLocationCallback
 import map.zone.speedalertsdk.StopRestrictionCallback
+import map.zone.speedalertsdk.VehicleType
 import map.zone.speedalertsdk.VoiceAlertType
 import map.zone.speedalertsdk.VoiceCallback
 import map.zone.speedalertsdk.VoiceProfile
@@ -80,6 +82,7 @@ class MapzoneSpeedAlertPlugin :
     private lateinit var locationStream: CallbackStream
     private lateinit var voiceStream: CallbackStream
     private lateinit var restrictionStream: CallbackStream
+    private lateinit var snappedLocationStream: CallbackStream
 
     private var systemLocationManager: LocationManager? = null
     private var locationListener: LocationListener? = null
@@ -95,14 +98,10 @@ class MapzoneSpeedAlertPlugin :
     // over — or clear them on detach.
     private var callbacksInstalled = false
 
-    // Cached engine config so configureVehicle can re-configure.
-    private var baseUrl = ""
-    private var apiKeyId = ""
-    private var apiKey = ""
-    private var vehicleId = ""
-    private var vehicleType = 1
-    private var seats = 4
-    private var weight = 1500.0
+    // The configuration the engine last accepted, so configureVehicle can
+    // re-configure with the same identity. A rejected configure leaves it as
+    // it was, matching the SDK, which keeps the previous configuration.
+    private var appliedConfig: EngineConfig? = null
 
     // Voice preferences live here as well as in the engine and are re-applied
     // after every configure, so a configureVehicle can never silently undo
@@ -147,6 +146,13 @@ class MapzoneSpeedAlertPlugin :
             messenger, "restriction",
             onOpen = { encoder.execute { restrictionStream.send(restriction.toMap()) } },
         )
+        // The SDK only makes the snapped-location upcall while a callback is
+        // set, so it is installed for as long as Dart listens.
+        snappedLocationStream = stream(
+            messenger, "snapped",
+            onOpen = { mgr.setSnappedLocationCallback(snappedLocationCallback) },
+            onClose = { mgr.setSnappedLocationCallback(null) },
+        )
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -180,16 +186,31 @@ class MapzoneSpeedAlertPlugin :
             "getPlatformVersion" ->
                 result.success("Android ${Build.VERSION.RELEASE}")
 
-            "initialize" -> {
-                readConfig(call)
-                applyConfig(result)
-            }
+            "initialize" -> applyConfig(EngineConfig.fromCall(call), result)
 
             "configureVehicle" -> {
-                vehicleType = call.argument<Number>("vehicleType")?.toInt() ?: vehicleType
-                seats = call.argument<Number>("seats")?.toInt() ?: seats
-                weight = call.argument<Number>("weight")?.toDouble() ?: weight
-                applyConfig(result)
+                val applied = appliedConfig
+                if (applied == null) {
+                    result.error(
+                        "NOT_INITIALIZED", "Call initialize() before configureVehicle().", null
+                    )
+                    return
+                }
+                applyConfig(applied.withVehicle(call), result)
+            }
+
+            "logout" -> {
+                // Signed out means configureVehicle can no longer sign anyone
+                // back in: only initialize does. Forgotten even if the request
+                // fails — the SDK is signed out locally either way.
+                appliedConfig = null
+                mgr.logout(object : ResultCallback {
+                    // The SDK reports on the main thread.
+                    override fun onResult(success: Boolean, errorCode: Int, errorMessage: String?) {
+                        Log.d(TAG, "logout success=$success code=$errorCode")
+                        result.success(resultMap(success, errorCode, errorMessage))
+                    }
+                })
             }
 
             "start" -> startTracking(result)
@@ -272,37 +293,38 @@ class MapzoneSpeedAlertPlugin :
 
     // MARK: - Engine setup & SDK callbacks
 
-    private fun readConfig(call: MethodCall) {
-        baseUrl = call.argument<String>("baseUrl") ?: ""
-        apiKeyId = call.argument<String>("apiKeyId") ?: ""
-        apiKey = call.argument<String>("apiKey") ?: ""
-        vehicleId = call.argument<String>("vehicleId") ?: ""
-        vehicleType = call.argument<Number>("vehicleType")?.toInt() ?: 1
-        seats = call.argument<Number>("seats")?.toInt() ?: 4
-        // Dart sends weight as int; configure() wants Double.
-        weight = call.argument<Number>("weight")?.toDouble() ?: 1500.0
-    }
-
     /**
-     * Reset the engine and configure it with the cached config. The SDK
-     * resolves the host application id itself, so it must match the id
-     * registered for the API key.
+     * Reset the engine and configure it with [config]. The SDK resolves the
+     * host application id itself, so it must match the id registered for the
+     * API key. Signing the identity in then runs in the background inside the
+     * SDK; its outcome arrives on the `result` channel.
      */
-    private fun applyConfig(result: Result) {
+    private fun applyConfig(config: EngineConfig, result: Result) {
+        // Unknown codes never reach the SDK, whose enum has no value for them.
+        val vehicleType = VehicleType.fromValue(config.vehicleTypeCode)
+        if (vehicleType == null) {
+            result.error(
+                "INVALID_CONFIGURATION",
+                "Unsupported vehicle type code ${config.vehicleTypeCode}.",
+                null
+            )
+            return
+        }
         if (!callbacksInstalled) {
             wireCallbacks()
             callbacksInstalled = true
         }
-        mgr.reset()
-        resetImageCache()
-        clearRestriction()
+        // Identity and metadata are personal data: never logged.
         Log.d(
             TAG,
-            "configure baseUrl=$baseUrl vehicleId=$vehicleId " +
-                "type=$vehicleType seats=$seats weight=$weight"
+            "configure type=${config.vehicleTypeCode} seats=${config.seats} " +
+                "weightTons=${config.weightTons}"
         )
-        try {
-            mgr.configure(baseUrl, apiKeyId, apiKey, vehicleId, vehicleType, seats, weight)
+        val rejection = try {
+            mgr.configure(
+                config.baseUrl, config.apiKeyId, config.apiKey, config.identity,
+                vehicleType, config.seats, config.weightTons, config.metadataJson
+            )
         } catch (e: RuntimeException) {
             // IllegalArgumentException (non-https baseUrl) or
             // IllegalStateException (host application id unresolvable).
@@ -310,6 +332,20 @@ class MapzoneSpeedAlertPlugin :
             result.error("CONFIGURE_FAILED", e.message, null)
             return
         }
+        if (rejection != null) {
+            // Nothing was applied: the previous configuration (if any) stays
+            // in effect, and the loaded zone, signs and what this plugin
+            // remembers are left untouched.
+            result.error("INVALID_CONFIGURATION", rejection, null)
+            return
+        }
+        // Accepted: drop the zone loaded for the previous profile. The clear
+        // runs on the SDK's queue after the sign-in it just queued, and keeps
+        // the session.
+        mgr.reset()
+        resetImageCache()
+        clearRestriction()
+        appliedConfig = config
         // Re-apply the host's voice preferences before any GPS reaches it.
         mgr.setMutedAlertTypes(mutedTypes)
         mgr.setVoiceProfile(voiceProfile)
@@ -351,13 +387,7 @@ class MapzoneSpeedAlertPlugin :
         mgr.setResultCallback(object : ResultCallback {
             override fun onResult(success: Boolean, errorCode: Int, errorMessage: String?) {
                 Log.d(TAG, "onResult success=$success code=$errorCode message=$errorMessage")
-                resultStream.send(
-                    mapOf(
-                        "success" to success,
-                        "errorCode" to errorCode,
-                        "errorMessage" to errorMessage
-                    )
-                )
+                resultStream.send(resultMap(success, errorCode, errorMessage))
             }
         })
         mgr.setAccessRestrictionCallback(object : AccessRestrictionCallback {
@@ -387,6 +417,16 @@ class MapzoneSpeedAlertPlugin :
         if (wav == null || wav.isEmpty()) return
         voiceStream.send(mapOf("wav" to wav, "trigger" to trigger, "priority" to priority))
     }
+
+    private val snappedLocationCallback =
+        SnappedLocationCallback { latitude, longitude, bearingDegrees ->
+            snappedLocationStream.send(
+                mapOf("lat" to latitude, "lng" to longitude, "bearing" to bearingDegrees)
+            )
+        }
+
+    private fun resultMap(success: Boolean, errorCode: Int, errorMessage: String?) =
+        mapOf("success" to success, "errorCode" to errorCode, "errorMessage" to errorMessage)
 
     // MARK: - Restriction signs
 
@@ -594,6 +634,46 @@ class MapzoneSpeedAlertPlugin :
         pendingPermissionResult?.success(granted)
         pendingPermissionResult = null
         return true
+    }
+}
+
+/**
+ * One `configure` call's inputs, as sent by Dart. [vehicleTypeCode] is the
+ * server's vehicle code; [metadataJson] is already JSON-encoded by Dart (the
+ * SDK validates it).
+ */
+private data class EngineConfig(
+    val baseUrl: String,
+    val apiKeyId: String,
+    val apiKey: String,
+    val identity: String,
+    val vehicleTypeCode: Int,
+    val seats: Int,
+    val weightTons: Double,
+    val metadataJson: String?,
+) {
+    /** The same identity and keys with the vehicle fields of [call]. */
+    fun withVehicle(call: MethodCall) = copy(
+        vehicleTypeCode = call.argument<Number>("vehicleType")?.toInt() ?: vehicleTypeCode,
+        seats = call.argument<Number>("seats")?.toInt() ?: seats,
+        weightTons = call.argument<Number>("weightTons")?.toDouble() ?: weightTons,
+    )
+
+    // Credentials and identity must never appear in logs.
+    override fun toString() =
+        "EngineConfig(type=$vehicleTypeCode, seats=$seats, weightTons=$weightTons)"
+
+    companion object {
+        fun fromCall(call: MethodCall) = EngineConfig(
+            baseUrl = call.argument<String>("baseUrl") ?: "",
+            apiKeyId = call.argument<String>("apiKeyId") ?: "",
+            apiKey = call.argument<String>("apiKey") ?: "",
+            identity = call.argument<String>("identity") ?: "",
+            vehicleTypeCode = call.argument<Number>("vehicleType")?.toInt() ?: 1,
+            seats = call.argument<Number>("seats")?.toInt() ?: 4,
+            weightTons = call.argument<Number>("weightTons")?.toDouble() ?: 1.5,
+            metadataJson = call.argument<String>("metadata"),
+        )
     }
 }
 

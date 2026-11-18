@@ -7,7 +7,7 @@ import MapZoneSpeedAlertSDK
 ///
 /// - MethodChannel `mapzone_speed_alert` for imperative calls.
 /// - EventChannels `.../alert`, `.../voice`, `.../ready`, `.../result`,
-///   `.../location`, `.../restriction` for the SDK callbacks.
+///   `.../location`, `.../restriction`, `.../snapped` for the SDK callbacks.
 ///
 /// The native engine is process-wide; the Swift `ZoneNetworkManager` around it
 /// is rebuilt on every `initialize` / `configureVehicle`, because it remembers
@@ -40,6 +40,7 @@ public class MapzoneSpeedAlertPlugin: NSObject, FlutterPlugin, CLLocationManager
   private var locationStream: CallbackStream!
   private var voiceStream: CallbackStream!
   private var restrictionStream: CallbackStream!
+  private var snappedLocationStream: CallbackStream!
 
   // Restriction images are PNG-encoded off the main thread; this serial queue
   // keeps the group updates in order and owns `restriction`.
@@ -50,14 +51,10 @@ public class MapzoneSpeedAlertPlugin: NSObject, FlutterPlugin, CLLocationManager
   // set up.
   private var configured = false
 
-  // Cached config so configureVehicle can re-configure.
-  private var baseUrl = ""
-  private var apiKeyId = ""
-  private var apiKey = ""
-  private var vehicleId = ""
-  private var vehicleType = 1
-  private var seats = 4
-  private var weight = 1500
+  // The configuration the engine last accepted, so configureVehicle can
+  // re-configure with the same identity. A rejected configure leaves it as it
+  // was, matching the SDK, which keeps the previous configuration.
+  private var appliedConfig: EngineConfig?
 
   // Voice preferences live here as well as in the engine and are re-applied
   // after every configure, so a configureVehicle can never silently undo what
@@ -123,15 +120,27 @@ public class MapzoneSpeedAlertPlugin: NSObject, FlutterPlugin, CLLocationManager
       result("iOS " + UIDevice.current.systemVersion)
 
     case "initialize":
-      readConfig(call.arguments as? [String: Any])
-      applyConfig(result)
+      applyConfig(EngineConfig(call.arguments as? [String: Any]), result)
 
     case "configureVehicle":
-      let args = call.arguments as? [String: Any]
-      vehicleType = (args?["vehicleType"] as? Int) ?? vehicleType
-      seats = (args?["seats"] as? Int) ?? seats
-      weight = (args?["weight"] as? Int) ?? weight
-      applyConfig(result)
+      guard let applied = appliedConfig else {
+        result(FlutterError(code: "NOT_INITIALIZED",
+                            message: "Call initialize() before configureVehicle().",
+                            details: nil))
+        return
+      }
+      applyConfig(applied.withVehicle(call.arguments as? [String: Any]), result)
+
+    case "logout":
+      // Signed out means configureVehicle can no longer sign anyone back in:
+      // only initialize does. Forgotten even if the request fails — the SDK
+      // is signed out locally either way.
+      appliedConfig = nil
+      // The SDK completes on the main thread.
+      mgr.logout { [weak self] success, code, message in
+        self?.log("logout success=\(success) code=\(code)")
+        result(["success": success, "errorCode": code, "errorMessage": message])
+      }
 
     case "start":
       startTracking(result)
@@ -212,47 +221,64 @@ public class MapzoneSpeedAlertPlugin: NSObject, FlutterPlugin, CLLocationManager
 
   // MARK: - Engine setup & SDK callbacks
 
-  private func readConfig(_ args: [String: Any]?) {
-    baseUrl = (args?["baseUrl"] as? String) ?? ""
-    apiKeyId = (args?["apiKeyId"] as? String) ?? ""
-    apiKey = (args?["apiKey"] as? String) ?? ""
-    vehicleId = (args?["vehicleId"] as? String) ?? ""
-    vehicleType = (args?["vehicleType"] as? Int) ?? 1
-    seats = (args?["seats"] as? Int) ?? 4
-    weight = (args?["weight"] as? Int) ?? 1500
-  }
-
-  /// Rebuild the manager and configure it with the cached config. The SDK
-  /// reads the host bundle id itself, so it must match the id registered for
-  /// the API key.
-  private func applyConfig(_ result: FlutterResult) {
-    // GPS capture keeps running: its closure always feeds the current `mgr`.
-    unwire(mgr)
-    mgr.reset()
-    resetImageCache()
-    clearRestriction()
-    // Same rule as the SDK (and the Android plugin, which throws): the SDK
-    // would only report it later through onResult.
-    guard baseUrl.hasPrefix("https://") else {
+  /// Rebuild the manager and configure it with `config`. The SDK reads the
+  /// host bundle id itself, so it must match the id registered for the API
+  /// key. Signing the identity in then runs in the background inside the SDK;
+  /// its outcome arrives on the `result` channel.
+  private func applyConfig(_ config: EngineConfig, _ result: FlutterResult) {
+    // Unknown codes never reach the SDK, whose enum has no value for them.
+    guard let vehicleType = VehicleType(rawValue: config.vehicleTypeCode) else {
+      result(FlutterError(code: "INVALID_CONFIGURATION",
+                          message: "Unsupported vehicle type code \(config.vehicleTypeCode).",
+                          details: nil))
+      return
+    }
+    // Same rule as the Android plugin, which throws: the SDK would only
+    // report it later through onResult. Checked before anything is torn down,
+    // so the current manager keeps serving.
+    guard config.baseUrl.hasPrefix("https://") else {
       configured = false
       result(FlutterError(code: "CONFIGURE_FAILED",
                           message: "baseUrl must start with https://", details: nil))
       return
     }
     let m = ZoneNetworkManager()
-    wireCallbacks(m)
+    attach(m)
+    // Identity and metadata are personal data: never logged.
+    log("configure type=\(config.vehicleTypeCode) seats=\(config.seats) weightTons=\(config.weightTons)")
+    if let rejection = m.configure(baseUrl: config.baseUrl, apiKeyId: config.apiKeyId,
+                                   apiKey: config.apiKey, identity: config.identity,
+                                   vehicleType: vehicleType, seats: config.seats,
+                                   weightsTons: config.weightTons,
+                                   metadata: config.metadataJson) {
+      // Nothing was applied: the previous configuration (if any) stays in
+      // effect, and the current manager, zone and signs are left untouched.
+      unwire(m)
+      result(FlutterError(code: "INVALID_CONFIGURATION", message: rejection, details: nil))
+      return
+    }
+    // Accepted: drop the previous manager and the zone loaded for the previous
+    // profile. Clearing the engine keeps the session the configure just set.
+    // GPS capture keeps running: its closure always feeds the current `mgr`.
+    unwire(mgr)
+    mgr.reset()
+    resetImageCache()
+    clearRestriction()
     mgr = m
-    log("configure baseUrl=\(baseUrl) vehicleId=\(vehicleId) type=\(vehicleType) seats=\(seats) weight=\(weight)")
-    m.configure(baseUrl: baseUrl, apiKeyId: apiKeyId, apiKey: apiKey,
-                vehicleId: vehicleId, vehicleType: vehicleType,
-                seats: seats, weights: weight)
-    // Re-apply the host's voice preferences before any GPS reaches it.
+    appliedConfig = config
+    configured = true
+    result(nil)
+  }
+
+  /// Wire every callback on `m` and re-apply the host's voice preferences
+  /// before any GPS reaches it.
+  private func attach(_ m: ZoneNetworkManager) {
+    wireCallbacks(m)
     m.setMutedAlertTypes(mutedTypes)
     m.setVoiceProfile(voiceProfile)
     m.setVoiceSpeed(voiceSpeed)
     if voiceStream.isActive { installVoiceHandler(m) }
-    configured = true
-    result(nil)
+    if snappedLocationStream.isActive { installSnappedLocationHandler(m) }
   }
 
   /// Detach every closure from a manager that is being replaced, so late
@@ -265,7 +291,20 @@ public class MapzoneSpeedAlertPlugin: NSObject, FlutterPlugin, CLLocationManager
     m.onAccessRestriction = nil
     m.onStopRestriction = nil
     m.onBuildupArea = nil
+    m.onSnappedLocation = nil
     m.useBuiltInVoicePlayer = false
+  }
+
+  /// Forward snapped locations to Dart. The SDK only computes the upcall
+  /// while the closure is set, so it is installed for as long as Dart listens.
+  private func installSnappedLocationHandler(_ m: ZoneNetworkManager) {
+    m.onSnappedLocation = { [weak self] latitude, longitude, bearingDegrees in
+      self?.snappedLocationStream.send([
+        "lat": latitude,
+        "lng": longitude,
+        "bearing": bearingDegrees,
+      ])
+    }
   }
 
   /// Forward voice clips to Dart; setting `onVoice` silences the built-in
@@ -335,6 +374,12 @@ public class MapzoneSpeedAlertPlugin: NSObject, FlutterPlugin, CLLocationManager
     restrictionStream = stream(messenger, "restriction", open: { [weak self] in
       guard let self = self else { return }
       self.encoder.async { self.restrictionStream.send(self.restriction.toMap()) }
+    })
+    snappedLocationStream = stream(messenger, "snapped", open: { [weak self] in
+      guard let self = self else { return }
+      self.installSnappedLocationHandler(self.mgr)
+    }, close: { [weak self] in
+      self?.mgr.onSnappedLocation = nil
     })
   }
 
@@ -515,6 +560,45 @@ public class MapzoneSpeedAlertPlugin: NSObject, FlutterPlugin, CLLocationManager
     // iOS < 14
     if status == .notDetermined { return }
     resolvePermission()
+  }
+}
+
+/// One `configure` call's inputs, as sent by Dart. `vehicleTypeCode` is the
+/// server's vehicle code; `metadataJson` is already JSON-encoded by Dart (the
+/// SDK validates it).
+private struct EngineConfig: CustomStringConvertible {
+  // Credentials and identity must never appear in logs.
+  var description: String {
+    "EngineConfig(type=\(vehicleTypeCode), seats=\(seats), weightTons=\(weightTons))"
+  }
+
+  var baseUrl: String
+  var apiKeyId: String
+  var apiKey: String
+  var identity: String
+  var vehicleTypeCode: Int
+  var seats: Int
+  var weightTons: Double
+  var metadataJson: String?
+
+  init(_ args: [String: Any]?) {
+    baseUrl = (args?["baseUrl"] as? String) ?? ""
+    apiKeyId = (args?["apiKeyId"] as? String) ?? ""
+    apiKey = (args?["apiKey"] as? String) ?? ""
+    identity = (args?["identity"] as? String) ?? ""
+    vehicleTypeCode = (args?["vehicleType"] as? NSNumber)?.intValue ?? 1
+    seats = (args?["seats"] as? NSNumber)?.intValue ?? 4
+    weightTons = (args?["weightTons"] as? NSNumber)?.doubleValue ?? 1.5
+    metadataJson = args?["metadata"] as? String
+  }
+
+  /// The same identity and keys with the vehicle fields of `args`.
+  func withVehicle(_ args: [String: Any]?) -> EngineConfig {
+    var config = self
+    config.vehicleTypeCode = (args?["vehicleType"] as? NSNumber)?.intValue ?? vehicleTypeCode
+    config.seats = (args?["seats"] as? NSNumber)?.intValue ?? seats
+    config.weightTons = (args?["weightTons"] as? NSNumber)?.doubleValue ?? weightTons
+    return config
   }
 }
 

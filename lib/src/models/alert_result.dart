@@ -1,5 +1,11 @@
-/// Emitted by the native `onResult` callback to report success / errors of the
-/// alert engine (zone loading, credential validation, etc.).
+import 'map_zone_error_code.dart';
+
+/// Outcome reported by the native engine: each zone load and sign-in on the
+/// `onResult` stream, and the result of `MapZoneSpeedAlert.logout`.
+///
+/// Branch on [errorCode] (see [MapZoneErrorCode]); [errorMessage] is a short
+/// English sentence derived from the code alone, meant for logs and fallback
+/// UI. Whatever the code, a zone already loaded keeps alerting.
 class AlertResult {
   const AlertResult({
     required this.success,
@@ -12,22 +18,13 @@ class AlertResult {
   final String? errorMessage;
 
   /// No error.
-  static const int codeSuccess = 0;
+  static const int codeSuccess = MapZoneErrorCode.success;
 
-  /// Invalid parameter passed to the engine.
-  static const int codeInvalidParameter = 1001;
+  /// Vehicle type not enabled for the API key.
+  static const int codeUnsupportedVehicleType =
+      MapZoneErrorCode.vehicleTypeNotAllowed;
 
-  /// API key expired / rejected.
-  static const int codeExpiredApiKey = 2003;
-
-  /// Vehicle type not supported for speed alerts.
-  static const int codeUnsupportedVehicleType = 3003;
-
-  bool get isExpiredApiKey => errorCode == codeExpiredApiKey;
   bool get isUnsupportedVehicleType => errorCode == codeUnsupportedVehicleType;
-
-  /// Network / parsing errors are reported with negative codes.
-  bool get isNetworkError => errorCode < 0;
 
   factory AlertResult.fromJson(Map<String, dynamic> json) {
     return AlertResult(

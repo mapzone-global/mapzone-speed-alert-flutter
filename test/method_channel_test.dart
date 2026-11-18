@@ -16,6 +16,9 @@ void main() {
       calls.add(call);
       if (call.method == 'getPlatformVersion') return 'Android 14';
       if (call.method == 'hasLocationPermissions') return true;
+      if (call.method == 'logout') {
+        return {'success': true, 'errorCode': 0, 'errorMessage': ''};
+      }
       return null;
     });
   });
@@ -31,17 +34,99 @@ void main() {
       baseUrl: 'https://x',
       apiKeyId: 'id',
       apiKey: 'key',
-      vehicleId: 'v1',
+      identity: '+84901234567',
       vehicleType: VehicleType.bus,
       seats: 30,
-      weight: 8000,
+      weightTons: 8,
+      metadata: {'appVersion': '2.0.0'},
     ));
     expect(calls.single.method, 'initialize');
     final args = Map<String, dynamic>.from(calls.single.arguments as Map);
     expect(args['baseUrl'], 'https://x');
-    expect(args['vehicleType'], 5);
-    expect(args['weight'], 8000);
+    expect(args['identity'], '+84901234567');
+    expect(args['vehicleType'], 3);
+    expect(args['seats'], 30);
+    expect(args['weightTons'], 8.0);
+    expect(args['metadata'], '{"appVersion":"2.0.0"}');
     expect(args.containsKey('bundleId'), isFalse);
+  });
+
+  test('initialize surfaces a rejected configuration', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      throw PlatformException(
+          code: 'INVALID_CONFIGURATION', message: 'identity is empty');
+    });
+    expect(
+      platform.initialize(const AlertConfig(
+          baseUrl: 'https://x', apiKeyId: 'id', apiKey: 'key', identity: '')),
+      throwsA(isA<PlatformException>()
+          .having((e) => e.code, 'code', 'INVALID_CONFIGURATION')
+          .having((e) => e.message, 'message', 'identity is empty')),
+    );
+  });
+
+  test('initialize rejects metadata that cannot be JSON-encoded', () async {
+    await expectLater(
+      platform.initialize(AlertConfig(
+        baseUrl: 'https://x',
+        apiKeyId: 'id',
+        apiKey: 'key',
+        identity: 'u1',
+        metadata: {'at': DateTime(2026)},
+      )),
+      throwsA(isA<PlatformException>()
+          .having((e) => e.code, 'code', 'INVALID_CONFIGURATION')),
+    );
+    expect(calls, isEmpty);
+  });
+
+  test('configureVehicle sends the vehicle code and tonnes', () async {
+    await platform.configureVehicle(
+        vehicleType: VehicleType.truck, seats: 2, weightTons: 12.5);
+    expect(calls.single.method, 'configureVehicle');
+    final args = Map<String, dynamic>.from(calls.single.arguments as Map);
+    expect(args, {'vehicleType': 5, 'seats': 2, 'weightTons': 12.5});
+  });
+
+  test('logout returns the native result', () async {
+    final result = await platform.logout();
+    expect(calls.single.method, 'logout');
+    expect(result.success, isTrue);
+    expect(result.errorCode, MapZoneErrorCode.success);
+  });
+
+  test('logout reports a failure code', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async => {
+              'success': false,
+              'errorCode': -8,
+              'errorMessage': 'not ready',
+            });
+    final result = await platform.logout();
+    expect(result.success, isFalse);
+    expect(result.errorCode, MapZoneErrorCode.deviceNotReady);
+    expect(result.errorMessage, 'not ready');
+  });
+
+  test('onSnappedLocation parses native events', () async {
+    const events = EventChannel('mapzone_speed_alert/snapped');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockStreamHandler(
+      events,
+      MockStreamHandler.inline(onListen: (args, sink) {
+        sink.success({'lat': 21.0, 'lng': 105.0, 'bearing': 90.0});
+      }),
+    );
+    addTearDown(() => TestDefaultBinaryMessengerBinding
+        .instance.defaultBinaryMessenger
+        .setMockStreamHandler(events, null));
+
+    final local = MethodChannelMapZoneSpeedAlert();
+    final first = await local.onSnappedLocation.first;
+    expect(first.latitude, 21.0);
+    expect(first.longitude, 105.0);
+    expect(first.bearingDegrees, 90.0);
   });
 
   test('processExternalLocation forwards coordinates', () async {

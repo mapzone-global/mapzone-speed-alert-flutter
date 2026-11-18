@@ -1,5 +1,5 @@
 group = "com.mapzone.mapzone_speed_alert"
-version = "1.0.0"
+version = "2.0.0"
 
 buildscript {
     ext.kotlin_version = "2.2.20"
@@ -56,7 +56,7 @@ android {
 
     dependencies {
         // MapZone Speed Alert SDK, published on JitPack.
-        implementation 'com.github.mapzone-global:mapzone_speed_alert_android:2.0.6'
+        implementation 'com.github.mapzone-global:mapzone_speed_alert_android:3.0.0'
 
         testImplementation("org.jetbrains.kotlin:kotlin-test")
         testImplementation("org.mockito:mockito-core:5.0.0")

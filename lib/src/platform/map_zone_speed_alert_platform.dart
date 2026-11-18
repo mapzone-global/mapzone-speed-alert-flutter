@@ -6,6 +6,7 @@ import '../models/alert_location.dart';
 import '../models/alert_result.dart';
 import '../models/ready_event.dart';
 import '../models/restriction_event.dart';
+import '../models/snapped_location.dart';
 import '../models/vehicle_type.dart';
 import '../models/voice_alert_type.dart';
 import '../models/voice_event.dart';
@@ -32,18 +33,25 @@ abstract class MapZoneSpeedAlertPlatform extends PlatformInterface {
 
   // MARK: - Lifecycle / configuration
 
-  /// Configure the native `ZoneNetworkManager` alert engine.
+  /// Configure the native `ZoneNetworkManager` alert engine and sign the
+  /// config's identity in.
   Future<void> initialize(AlertConfig config) {
     throw UnimplementedError('initialize() has not been implemented.');
   }
 
-  /// Re-configure the engine with a new vehicle profile (type / seats / weight).
+  /// Re-configure the engine with a new vehicle profile (type / seats /
+  /// weight in tonnes), keeping the signed-in identity.
   Future<void> configureVehicle({
     required VehicleType vehicleType,
     required int seats,
-    required int weight,
+    required double weightTons,
   }) {
     throw UnimplementedError('configureVehicle() has not been implemented.');
+  }
+
+  /// Sign the identity out of this device.
+  Future<AlertResult> logout() {
+    throw UnimplementedError('logout() has not been implemented.');
   }
 
   /// Start native GPS capture and begin feeding the engine (Approach A).
@@ -75,7 +83,8 @@ abstract class MapZoneSpeedAlertPlatform extends PlatformInterface {
     int? fixTimeMillis,
   }) {
     throw UnimplementedError(
-        'processExternalLocation() has not been implemented.');
+      'processExternalLocation() has not been implemented.',
+    );
   }
 
   /// Lightweight zone-cache warm-up: refreshes the zone data around
@@ -114,12 +123,14 @@ abstract class MapZoneSpeedAlertPlatform extends PlatformInterface {
 
   Future<bool> requestLocationPermissions() {
     throw UnimplementedError(
-        'requestLocationPermissions() has not been implemented.');
+      'requestLocationPermissions() has not been implemented.',
+    );
   }
 
   Future<bool> hasLocationPermissions() {
     throw UnimplementedError(
-        'hasLocationPermissions() has not been implemented.');
+      'hasLocationPermissions() has not been implemented.',
+    );
   }
 
   // MARK: - App lifecycle bridging
@@ -164,5 +175,10 @@ abstract class MapZoneSpeedAlertPlatform extends PlatformInterface {
   /// Native GPS fixes (Approach A).
   Stream<AlertLocation> get onLocation {
     throw UnimplementedError('onLocation has not been implemented.');
+  }
+
+  /// Fixes snapped onto the matched road, with the road bearing.
+  Stream<SnappedLocation> get onSnappedLocation {
+    throw UnimplementedError('onSnappedLocation has not been implemented.');
   }
 }
