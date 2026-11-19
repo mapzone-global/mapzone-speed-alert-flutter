@@ -17,10 +17,6 @@ either from the plugin itself or from your own navigation SDK.
 | iOS | 14.0 |
 | Network | Internet access to the alert service |
 
-The plugin pulls the native engine automatically:
-Android `com.github.mapzone-global:mapzone_speed_alert_android:3.0.1` (JitPack),
-iOS `MapZoneSpeedAlertSDK` `3.0.1` (CocoaPods).
-
 > **Upgrading from 1.0.x?** 2.0.0 signs a user in (`identity` replaces
 > `vehicleId`), changes the vehicle-type numbers and takes the weight in
 > tonnes. See [Migrating from 1.0.x to 2.0.0](#migrating-from-10x-to-200).
@@ -147,8 +143,7 @@ try {
 
 Call `initialize` when the user signs in **and on every app launch** with a
 user already signed in — the SDK does not remember the identity across
-launches. Signing in then runs in the background; its failures arrive on
-`onResult`. Use `configureVehicle(...)` to change the vehicle profile later
+launches. Its failures arrive on `onResult`. Use `configureVehicle(...)` to change the vehicle profile later
 (same identity), and `logout()` when the user signs out — see
 [Sessions](#sessions-sign-in-and-sign-out).
 
@@ -161,10 +156,7 @@ phone number in `+84…` form. Pick one format and keep it: `"0901234567"` and
 
 #### Metadata
 
-Your own information about this device / user (app version, internal user id,
-…), stored with the session when it **opens** — not sent with every request.
-Agree the key names with Vietmap; the SDK adds `"model"` and `"os"` unless you
-set them. One JSON object, at most 2048 UTF-8 bytes, nesting depth at most 16.
+**It is optional**. Agree the key names with Vietmap. One JSON object, at most 2048 UTF-8 bytes, nesting depth at most 16.
 Re-initializing with the same identity keeps the metadata stored at sign-in; to
 record new metadata the user has to sign out and in again.
 
@@ -208,21 +200,6 @@ if (await alert.requestLocationPermissions()) {
 }
 alert.onLocation.listen((l) => debugPrint('${l.speedKmh} km/h'));
 ```
-
-Where the fixes come from:
-
-- **Android:** Google's Fused Location (GPS + Wi-Fi + cell, so it also works
-  indoors) when Play Services is usable on the device. Without Play Services the
-  OS `gps` and `network` providers run together; a network fix is used only
-  once GPS has been silent for more than 5 seconds. The plugin depends on
-  `play-services-location` 21.x for this (it is not required at runtime); a
-  plugin in your app still built against 20.x or older conflicts with it.
-  Grant precise location: with only approximate location the fixes are coarse,
-  without speed or heading.
-- **iOS:** CoreLocation through the SDK's `EnhancedLocationManager`.
-- Android: when the device reports no heading, or the vehicle moves slower than
-  1 m/s, the last heading is kept instead of sending `0` (north), so the engine
-  does not snap the vehicle onto the opposite carriageway while stopped.
 
 **Mode B — injected.** Feed positions yourself, about once per second. Use this
 to reuse the snapped location from a navigation SDK so the alerts and the map
@@ -370,7 +347,6 @@ All members are on `MapZoneSpeedAlert.instance`.
 | `setVoiceSpeed(double)` | Built-in player speed, `1.0` = recorded, clamped to `0.5..2.0`, pitch kept. No effect while `onVoice` has a listener. Persists across `reset()`. |
 | `requestLocationPermissions()` / `hasLocationPermissions()` | Runtime location permission (mode A). |
 | `registerLifecycleObserver()` / `unregisterLifecycleObserver()` | Send app background / foreground to the native side. Reserved: the current native SDK ignores them. Safe to call more than once. |
-| `getLinkCoords(linkId)` | **Deprecated** — removed from the native SDK, always returns `null`. |
 
 ### Streams
 
@@ -526,37 +502,7 @@ the native SDK, so they cannot clash with the SDK's own negative codes.
 `errorMessage` is a fixed English sentence; the platform's own wording only
 goes to the log.
 
-## Example app
-
-[`example/`](example) is a single-screen demo built on
-`vietmap_flutter_navigation` that shows both GPS modes:
-
-- **No destination — mode A:** `start()` captures raw GPS, no route.
-- **Destination picked — mode B:** search a destination, build and draw the
-  route, then drive it (simulated by default; toggle in the settings dialog).
-  The snapped GPS is fed in with `processExternalLocation`.
-
-Speed-limit, camera and toll signs render as a HUD, a speed chip shows the
-speed status with the restriction signs under it, and a floating button mutes
-voice categories. The example plays voice clips itself by listening to
-`onVoice` (priority queue on `audioplayers`, see
-[`example/lib/voice_queue.dart`](example/lib/voice_queue.dart)). The identity,
-vehicle profile and sign-out are in the settings dialog; a `2006` shows a
-"signed in elsewhere" dialog.
-
-Before running, copy the template and fill in your Speed Alert credentials, an
-identity enabled for your key and the map API key. `env.dart` is git-ignored, so
-the keys stay on your machine:
-
-```sh
-cp example/lib/env.example.dart example/lib/env.dart
-```
-
 ## Migrating from 1.0.x to 2.0.0
-
-2.0.0 moves to native SDK 3.0.1 (Android `3.0.1`, iOS `3.0.1`). Callbacks,
-streams, `processExternalLocation`, `start`/`stop`/`reset`, muting, voice
-profile and voice speed are unchanged.
 
 ```
   1.0.x                                         2.0.0
