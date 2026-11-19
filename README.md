@@ -541,8 +541,13 @@ voice categories. The example plays voice clips itself by listening to
 vehicle profile and sign-out are in the settings dialog; a `2006` shows a
 "signed in elsewhere" dialog.
 
-Fill your Speed Alert credentials, an identity enabled for your key and the map
-API key in `example/lib/env.dart` before running.
+Before running, copy the template and fill in your Speed Alert credentials, an
+identity enabled for your key and the map API key. `env.dart` is git-ignored, so
+the keys stay on your machine:
+
+```sh
+cp example/lib/env.example.dart example/lib/env.dart
+```
 
 ## Migrating from 1.0.x to 2.0.0
 
