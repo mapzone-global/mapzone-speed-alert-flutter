@@ -17,7 +17,7 @@ toll and road-restriction alerts with voice for Android and iOS.
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*'
   s.dependency 'Flutter'
-  s.dependency 'MapZoneSpeedAlertSDK', '= 3.0.0'
+  s.dependency 'MapZoneSpeedAlertSDK', '= 3.0.1'
   # 14.0 is the floor for the SDK's EnhancedLocationManager APIs. Apps adding
   # Vietmap Navigation (Approach B) should raise their own deployment target.
   s.platform = :ios, '14.0'

@@ -18,8 +18,8 @@ either from the plugin itself or from your own navigation SDK.
 | Network | Internet access to the alert service |
 
 The plugin pulls the native engine automatically:
-Android `com.github.mapzone-global:mapzone_speed_alert_android:3.0.0` (JitPack),
-iOS `MapZoneSpeedAlertSDK` `3.0.0` (CocoaPods).
+Android `com.github.mapzone-global:mapzone_speed_alert_android:3.0.1` (JitPack),
+iOS `MapZoneSpeedAlertSDK` `3.0.1` (CocoaPods).
 
 > **Upgrading from 1.0.x?** 2.0.0 signs a user in (`identity` replaces
 > `vehicleId`), changes the vehicle-type numbers and takes the weight in
@@ -546,7 +546,7 @@ API key in `example/lib/env.dart` before running.
 
 ## Migrating from 1.0.x to 2.0.0
 
-2.0.0 moves to native SDK 3.0.0 (Android `3.0.0`, iOS `3.0.0`). Callbacks,
+2.0.0 moves to native SDK 3.0.1 (Android `3.0.1`, iOS `3.0.1`). Callbacks,
 streams, `processExternalLocation`, `start`/`stop`/`reset`, muting, voice
 profile and voice speed are unchanged.
 

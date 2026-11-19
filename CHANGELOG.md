@@ -1,6 +1,6 @@
 ## 2.0.0
 
-Native SDK 3.0.0: signed-in sessions. See the README section *Migrating from
+Native SDK 3.0.1: signed-in sessions. See the README section *Migrating from
 1.0.x to 2.0.0*.
 
 **Breaking**
@@ -30,14 +30,15 @@ Native SDK 3.0.0: signed-in sessions. See the README section *Migrating from
 * `AlertConfig.metadata` (`Map<String, Object?>?`), stored with the session.
 * `onSnappedLocation` stream + `SnappedLocation`: each matched fix on the road,
   with the road bearing. Computed natively only while listened to.
-* `MapZoneErrorCode`: every code of the native 3.0.0 table, including the
+* `MapZoneErrorCode`: every code of the native 3.0.1 table, including the
   session codes `2006`, `2007`, `2008`, `2010`, `3011`, `3012`, `4001`, `-6`,
   `-8`.
 
 **Changed**
 
-* Native SDK: Android `mapzone_speed_alert_android` `3.0.0` (JitPack), iOS
-  `MapZoneSpeedAlertSDK` `3.0.0` (CocoaPods).
+* Native SDK: Android `mapzone_speed_alert_android` `3.0.1` (JitPack), iOS
+  `MapZoneSpeedAlertSDK` `3.0.1` (CocoaPods). 3.0.1 sends sign-in / sign-out to
+  the `mzcrm-api` endpoint; with 3.0.0 both failed with `-2`.
 * The plugin no longer logs the vehicle id / identity on configure.
 * Android native GPS capture (`start()`): Fused Location when Play Services is
   usable, otherwise the OS `gps` + `network` providers (network only while GPS
