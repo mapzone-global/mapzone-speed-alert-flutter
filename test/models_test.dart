@@ -263,5 +263,11 @@ void main() {
       expect(MapZoneErrorCode.tooManyRequests, 4000);
       expect(MapZoneErrorCode.requestQuotaExceeded, 4001);
     });
+
+    test('plugin location codes stay clear of the native SDK codes', () {
+      expect(MapZoneErrorCode.locationUnavailable, -100);
+      expect(MapZoneErrorCode.locationPermissionDenied, -101);
+      expect(MapZoneErrorCode.responseNotVerified, -1);
+    });
   });
 }

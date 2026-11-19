@@ -502,15 +502,30 @@ public class MapzoneSpeedAlertPlugin: NSObject, FlutterPlugin, CLLocationManager
         "timestamp": fixTime,
       ])
     }
+    // The SDK reports an authorization change before the error it causes, so
+    // the status of the manager that failed is known when the error arrives.
+    var captureAuthorizationStatus: CLAuthorizationStatus?
+    lm.onAuthorizationChanged = { status in captureAuthorizationStatus = status }
     lm.onLocationError = { [weak self] error in
-      self?.log("onLocationError: \(error)")
-      self?.resultStream.send([
+      guard let self = self else { return }
+      // The SDK's own wording stays in the log; Dart gets a plugin code (the
+      // -100 range, clear of the native SDK's codes) and a fixed sentence.
+      self.log("onLocationError: \(error)")
+      let status = captureAuthorizationStatus ?? self.authorizationStatus()
+      let isDenied = status == .denied || status == .restricted
+      self.resultStream.send([
         "success": false,
-        "errorCode": -1,
-        "errorMessage": error,
+        "errorCode": isDenied ? Self.errorLocationPermissionDenied : Self.errorLocationUnavailable,
+        "errorMessage": isDenied ? Self.messageLocationPermissionDenied
+                                 : Self.messageLocationUnavailable,
       ])
     }
-    lm.enableBackgroundLocationUpdates(true)
+    // Only with "Always": below that the SDK answers with an error although
+    // capture runs normally (EnhancedLocationManager already allows background
+    // updates when it is created).
+    if authorizationStatus() == .authorizedAlways {
+      lm.enableBackgroundLocationUpdates(true)
+    }
     lm.startTracking(highAccuracyMode: true)
     locationManager = lm
     result(nil)
@@ -523,15 +538,25 @@ public class MapzoneSpeedAlertPlugin: NSObject, FlutterPlugin, CLLocationManager
 
   // MARK: - Permissions
 
-  private func hasLocationPermission() -> Bool {
-    let status: CLAuthorizationStatus
+  private func authorizationStatus() -> CLAuthorizationStatus {
     if #available(iOS 14.0, *) {
-      status = permissionManager.authorizationStatus
-    } else {
-      status = CLLocationManager.authorizationStatus()
+      return permissionManager.authorizationStatus
     }
+    return CLLocationManager.authorizationStatus()
+  }
+
+  private func hasLocationPermission() -> Bool {
+    let status = authorizationStatus()
     return status == .authorizedWhenInUse || status == .authorizedAlways
   }
+
+  // Plugin-side result codes, mirrored in Dart `MapZoneErrorCode` and the
+  // Android plugin (-101 is iOS only). The -100…-199 range never overlaps the
+  // native SDK's codes.
+  private static let errorLocationUnavailable = -100
+  private static let errorLocationPermissionDenied = -101
+  private static let messageLocationUnavailable = "Location is unavailable on this device."
+  private static let messageLocationPermissionDenied = "Location permission is denied."
 
   private func requestLocationPermission(_ result: @escaping FlutterResult) {
     if hasLocationPermission() {

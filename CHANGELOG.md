@@ -36,10 +36,6 @@ Native SDK 3.0.1: signed-in sessions. See the README section *Migrating from
 
 **Changed**
 
-* Native SDK: Android `mapzone_speed_alert_android` `3.0.1` (JitPack), iOS
-  `MapZoneSpeedAlertSDK` `3.0.1` (CocoaPods). 3.0.1 sends sign-in / sign-out to
-  the `mzcrm-api` endpoint; with 3.0.0 both failed with `-2`.
-* The plugin no longer logs the vehicle id / identity on configure.
 * Android native GPS capture (`start()`): Fused Location when Play Services is
   usable, otherwise the OS `gps` + `network` providers (network only while GPS
   is silent), instead of the `gps` provider alone — fixes now arrive indoors.
@@ -47,8 +43,13 @@ Native SDK 3.0.1: signed-in sessions. See the README section *Migrating from
   Adds a dependency on `play-services-location` 21.3.0. iOS unchanged.
   `start()` now fails with `NO_LOCATION_SERVICE` when no source can start
   (was `LOCATION_ERROR`); a source lost after a successful start is reported on
-  `onResult` with code `-1`, as on iOS. Coordinates are logged only in
-  debuggable builds.
+  `onResult` as `MapZoneErrorCode.locationUnavailable`. Coordinates are logged
+  only in debuggable builds.
+* Native GPS capture errors are reported on `onResult` with plugin codes
+  `-100` (`locationUnavailable`, both platforms) and `-101`
+  (`locationPermissionDenied`, iOS only) instead of `-1`, which is the native
+  SDK's "response could not be verified". iOS no longer reports "Always authorization required for
+  background location" while capture runs with when-in-use permission.
 * Example app: identity field and sign-out in the settings dialog, a
   "signed in elsewhere" dialog on `2006`, weight in tonnes, the six vehicle
   types.

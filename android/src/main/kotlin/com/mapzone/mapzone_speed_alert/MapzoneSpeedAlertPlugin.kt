@@ -58,6 +58,13 @@ class MapzoneSpeedAlertPlugin :
         const val CHANNEL = "mapzone_speed_alert"
         const val TAG = "MapZoneSpeedAlert"
         const val PERMISSION_REQUEST_CODE = 4021
+
+        // Plugin-side result codes, mirrored in Dart `MapZoneErrorCode` and the
+        // iOS plugin. The -100…-199 range never overlaps the native SDK's codes.
+        // -101 (permission lost) is iOS only: revoking a runtime permission on
+        // Android kills the process.
+        const val ERROR_LOCATION_UNAVAILABLE = -100
+        const val MESSAGE_LOCATION_UNAVAILABLE = "Location is unavailable on this device."
     }
 
     private lateinit var appContext: Context
@@ -505,9 +512,9 @@ class MapzoneSpeedAlertPlugin :
             Log.w(TAG, "Only approximate location granted: fixes will be coarse, without speed or heading")
         }
         val capture = PluginLocationCapture(appContext, ::handleLocation) {
-            // Same channel and code as the iOS plugin's location error.
+            // Same channel, code and sentence as the iOS plugin.
             resultStream.send(
-                resultMap(false, -1, "No location source is available on this device.")
+                resultMap(false, ERROR_LOCATION_UNAVAILABLE, MESSAGE_LOCATION_UNAVAILABLE)
             )
         }
         if (!capture.start()) {

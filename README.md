@@ -518,10 +518,13 @@ reported **once**. Branch on the exact code — ranges no longer have one meanin
 | `-5` / `-99` | `bridgeFailed` / `bridgeFailedLegacy` | Native bridge failed (e.g. library missing for this device's ABI) | — |
 | `-6` | `notLoggedIn` | Nobody signed in (`logout` called, or `initialize` never was) | Stops until `initialize` |
 | `-8` | `deviceNotReady` | Device cannot be read yet (e.g. iPhone not unlocked since restart); show a notice | Pauses, retries about once a minute |
+| `-100` | `locationUnavailable` | **Plugin, mode A:** no position — a location error on iOS, or no location source left on Android after `start()` succeeded | Alerts wait for the next fix |
+| `-101` | `locationPermissionDenied` | **Plugin, mode A, iOS only:** location permission denied or restricted; send the user to the system settings | GPS capture stops; call `start()` again after permission is granted |
 
-In mode A a native location failure is also reported on `onResult` with code
-`-1` (on Android: no location source left after `start()` succeeded; on iOS:
-the location error text).
+Codes `-100`…`-199` belong to this plugin (its native GPS capture), never to
+the native SDK, so they cannot clash with the SDK's own negative codes.
+`errorMessage` is a fixed English sentence; the platform's own wording only
+goes to the log.
 
 ## Example app
 

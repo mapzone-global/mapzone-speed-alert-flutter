@@ -1,8 +1,8 @@
 /// Result codes reported through [AlertResult.errorCode] — on the `onResult`
 /// stream and by [MapZoneSpeedAlert.logout].
 ///
-/// The values are the native SDK 3.0.0 codes (`MapZoneError` on Android and
-/// iOS). Branch on the exact code: ranges such as `2000`–`2999` no longer have
+/// The values are the native SDK 3.0.1 codes (`MapZoneError` on Android and
+/// iOS), plus this plugin's own codes in the `-100`…`-199` range. Branch on the exact code: ranges such as `2000`–`2999` no longer have
 /// one single meaning. Codes that stop or pause zone fetching are reported
 /// once, not on every GPS fix, and the zone already loaded keeps alerting.
 abstract final class MapZoneErrorCode {
@@ -101,4 +101,17 @@ abstract final class MapZoneErrorCode {
 
   /// The service is starting up; the SDK backs off.
   static const int serviceStarting = 5004;
+
+  // ── Plugin (-100 … -199) ──────────────────────────────────────────────────
+  // Reported by this plugin's native GPS capture (`start()`), never by the
+  // native SDK, so they cannot clash with its codes.
+
+  /// Native GPS capture cannot get a position: a location error on iOS, or on
+  /// Android no location source left after `start()` succeeded.
+  static const int locationUnavailable = -100;
+
+  /// iOS only: native GPS capture lost location permission (denied or
+  /// restricted). Capture stops; send the user to the system settings, then
+  /// call `start()` again once permission is back.
+  static const int locationPermissionDenied = -101;
 }
