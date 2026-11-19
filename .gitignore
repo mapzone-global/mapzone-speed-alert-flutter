@@ -51,3 +51,5 @@ migrate_working_dir/
 
 # redmine-task (ngữ cảnh cá nhân)
 /.redmine
+/.claude
+/plans

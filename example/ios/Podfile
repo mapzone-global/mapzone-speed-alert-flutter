@@ -30,7 +30,7 @@ flutter_ios_podfile_setup
 target 'Runner' do
   use_frameworks!
 
-  pod 'MapZoneSpeedAlertSDK', '2.0.5'
+  pod 'MapZoneSpeedAlertSDK', '3.0.1'
 
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
   target 'RunnerTests' do

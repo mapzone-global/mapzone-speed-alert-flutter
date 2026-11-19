@@ -1,36 +1,44 @@
 /// Vehicle type passed to the MapZone Speed Alert engine.
 ///
-/// The integer [value] is the code understood by the native SDK. These codes
-/// are taken from the Android SDK's authoritative `VehicleType.getValue()`
-/// (verified from `mapzone_speed_alert_android` 2.0.0):
+/// [value] is the MapZone server's own vehicle code, sent unchanged — the same
+/// numbers as the native SDK 3.0.0 `VehicleType` enum on Android and iOS.
 ///
-/// `car=1, motorcycle=2, truck=3, coach=4, bus=5, taxi=6, bicycle=7,
-/// pedestrian=8, emergency=9`.
+/// The type must also be enabled for your API key; otherwise sign-in reports
+/// `MapZoneErrorCode.invalidRequest` and zone requests
+/// `MapZoneErrorCode.vehicleTypeNotAllowed`.
 ///
-/// `car`/`motorcycle`/`truck` agree with the iOS SDK documentation (1/2/3).
-/// The higher codes should be re-verified against the iOS SDK enum; the server
-/// reports an unsupported type through [AlertResult] error code `3003`.
+/// Coming from 1.0.x? The numbers changed: see the README section *Migrating
+/// from 1.0.x to 2.0.0*. Do not feed an old stored number to [fromValue].
 enum VehicleType {
+  /// Car (xe ô tô).
   car(1),
-  motorcycle(2),
-  truck(3),
+
+  /// Taxi (xe taxi).
+  taxi(2),
+
+  /// Bus (xe bus).
+  bus(3),
+
+  /// Coach (xe khách).
   coach(4),
-  bus(5),
-  taxi(6),
-  bicycle(7),
-  pedestrian(8),
-  emergency(9);
+
+  /// Truck (xe tải).
+  truck(5),
+
+  /// Motorcycle (xe máy).
+  motorcycle(7);
 
   const VehicleType(this.value);
 
-  /// SDK vehicle-type code.
+  /// Server vehicle code.
   final int value;
 
-  /// Resolve a [VehicleType] from its native [value]. Falls back to [car].
-  static VehicleType fromValue(int value) {
-    return VehicleType.values.firstWhere(
-      (v) => v.value == value,
-      orElse: () => VehicleType.car,
-    );
+  /// The type for a server vehicle code, or `null` when the SDK does not
+  /// offer it.
+  static VehicleType? fromValue(int value) {
+    for (final type in VehicleType.values) {
+      if (type.value == value) return type;
+    }
+    return null;
   }
 }

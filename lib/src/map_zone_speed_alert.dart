@@ -6,6 +6,7 @@ import 'models/alert_location.dart';
 import 'models/alert_result.dart';
 import 'models/ready_event.dart';
 import 'models/restriction_event.dart';
+import 'models/snapped_location.dart';
 import 'models/vehicle_type.dart';
 import 'models/voice_alert_type.dart';
 import 'models/voice_event.dart';
@@ -43,20 +44,48 @@ class MapZoneSpeedAlert with WidgetsBindingObserver {
 
   // MARK: - Configuration & engine lifecycle
 
-  /// Configure the native alert engine. Call once before [start].
+  /// Configure the native alert engine and sign [AlertConfig.identity] in on
+  /// this device. Call it before [start] on every sign-in and on every app
+  /// launch with a user already signed in; call it again to switch identity.
+  ///
+  /// Throws a [PlatformException]:
+  /// * `INVALID_CONFIGURATION` — the SDK rejected an input (identity, vehicle
+  ///   type, seats, weight, metadata), or [AlertConfig.metadata] holds a value
+  ///   `jsonEncode` cannot encode. The message says why. Nothing was applied:
+  ///   the previous configuration, loaded zone and signs stay in effect.
+  /// * `CONFIGURE_FAILED` — `baseUrl` is not `https://`, or the SDK could not
+  ///   start in this process.
+  ///
+  /// The sign-in itself runs in the background; its failures arrive on
+  /// [onResult] (see [MapZoneErrorCode]).
   Future<void> initialize(AlertConfig config) => _platform.initialize(config);
 
-  /// Re-configure the engine with a new vehicle profile at runtime. Mute and
-  /// voice-profile settings are kept.
+  /// Re-configure the engine with a new vehicle profile at runtime, keeping
+  /// the identity and metadata of the last successful [initialize]. Mute,
+  /// voice-profile and voice-speed settings are kept. Throws like
+  /// [initialize], and `NOT_INITIALIZED` before [initialize] or after
+  /// [logout] — signing back in always goes through [initialize].
   Future<void> configureVehicle({
     required VehicleType vehicleType,
     required int seats,
-    required int weight,
+    required double weightTons,
   }) => _platform.configureVehicle(
     vehicleType: vehicleType,
     seats: seats,
-    weight: weight,
+    weightTons: weightTons,
   );
+
+  /// Sign the identity out of this device: call it when the user signs out,
+  /// and after [MapZoneErrorCode.sessionMoved].
+  ///
+  /// Zone fetches stop at once; the zone already loaded keeps alerting. The
+  /// result is `success == true` when logged out, also when nobody was signed
+  /// in. On failure (e.g. offline) the SDK is already signed out locally —
+  /// call [logout] again later to retry. [reset] does not sign out.
+  ///
+  /// After logout, [configureVehicle] throws `NOT_INITIALIZED` until the next
+  /// [initialize].
+  Future<AlertResult> logout() => _platform.logout();
 
   /// Start native GPS capture and begin producing alerts (Approach A).
   Future<void> start() => _platform.start();
@@ -147,6 +176,12 @@ class MapZoneSpeedAlert with WidgetsBindingObserver {
 
   /// Native GPS fixes (Approach A).
   Stream<AlertLocation> get onLocation => _platform.onLocation;
+
+  /// Each processed fix that matched a road, moved onto that road, with the
+  /// road bearing in the direction of travel — draw the vehicle marker from
+  /// it. Fixes without a match produce nothing: keep the marker where it was.
+  /// The SDK computes these only while this stream has a listener.
+  Stream<SnappedLocation> get onSnappedLocation => _platform.onSnappedLocation;
 
   // MARK: - App lifecycle bridging
 

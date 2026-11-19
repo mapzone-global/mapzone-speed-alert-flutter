@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mapzone_speed_alert_example/services/permission_service.dart';
@@ -92,7 +93,10 @@ void main() {
     expect(s.serviceEnabled, isFalse, reason: '…but there is no GPS to read');
   });
 
-  test('request() escalates to "Always" once when-in-use is granted', () async {
+  test('request() escalates to "Always" once when-in-use is granted (iOS)',
+      () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
     final requested = stub(status: _granted);
     await PermissionService.request();
     // Background alerts need "Always", and iOS only shows the
@@ -103,6 +107,17 @@ void main() {
     expect(requested.indexOf(_permissionLocationWhenInUse),
         lessThan(requested.indexOf(_permissionLocationAlways)),
         reason: 'iOS drops an Always request that arrives before when-in-use');
+  });
+
+  test('request() never asks for "Always" on Android', () async {
+    // Android 11+ answers that request by opening the full-screen Settings
+    // page; the background upgrade is left to the in-app reminder.
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final requested = stub(status: _granted);
+    await PermissionService.request();
+    expect(requested, contains(_permissionLocationWhenInUse));
+    expect(requested, isNot(contains(_permissionLocationAlways)));
   });
 
   test('request() does not ask for "Always" when when-in-use was refused',

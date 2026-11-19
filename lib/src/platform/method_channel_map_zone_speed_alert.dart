@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/services.dart';
 
 import '../models/alert_config.dart';
@@ -6,6 +8,7 @@ import '../models/alert_location.dart';
 import '../models/alert_result.dart';
 import '../models/ready_event.dart';
 import '../models/restriction_event.dart';
+import '../models/snapped_location.dart';
 import '../models/vehicle_type.dart';
 import '../models/voice_alert_type.dart';
 import '../models/voice_event.dart';
@@ -30,6 +33,9 @@ class MethodChannelMapZoneSpeedAlert extends MapZoneSpeedAlertPlatform {
   final EventChannel _restrictionChannel = const EventChannel(
     '$_channelName/restriction',
   );
+  final EventChannel _snappedLocationChannel = const EventChannel(
+    '$_channelName/snapped',
+  );
 
   // Cached streams so multiple listeners share one native subscription.
   Stream<AlertEvent>? _onAlert;
@@ -38,6 +44,7 @@ class MethodChannelMapZoneSpeedAlert extends MapZoneSpeedAlertPlatform {
   Stream<AlertResult>? _onResult;
   Stream<AlertLocation>? _onLocation;
   Stream<RestrictionEvent>? _onRestriction;
+  Stream<SnappedLocation>? _onSnappedLocation;
 
   // Native shares one subscription between every Dart listener and only
   // replays its state when that subscription opens, so the latest event is
@@ -58,20 +65,37 @@ class MethodChannelMapZoneSpeedAlert extends MapZoneSpeedAlertPlatform {
 
   @override
   Future<void> initialize(AlertConfig config) async {
-    await _method.invokeMethod<void>('initialize', config.toJson());
+    final Map<String, dynamic> payload;
+    try {
+      payload = config.toJson();
+    } on JsonUnsupportedObjectError catch (e) {
+      // Same contract as a rejection by the SDK: nothing is applied.
+      throw PlatformException(
+        code: 'INVALID_CONFIGURATION',
+        message:
+            'metadata is not JSON-encodable: ${e.unsupportedObject.runtimeType}',
+      );
+    }
+    await _method.invokeMethod<void>('initialize', payload);
   }
 
   @override
   Future<void> configureVehicle({
     required VehicleType vehicleType,
     required int seats,
-    required int weight,
+    required double weightTons,
   }) async {
     await _method.invokeMethod<void>('configureVehicle', <String, dynamic>{
       'vehicleType': vehicleType.value,
       'seats': seats,
-      'weight': weight,
+      'weightTons': weightTons,
     });
+  }
+
+  @override
+  Future<AlertResult> logout() async {
+    final result = await _method.invokeMapMethod<String, dynamic>('logout');
+    return AlertResult.fromJson(result ?? const <String, dynamic>{});
   }
 
   @override
@@ -223,5 +247,13 @@ class MethodChannelMapZoneSpeedAlert extends MapZoneSpeedAlertPlatform {
       (event) => AlertLocation.fromJson(_asMap(event)),
     );
     return _onLocation!;
+  }
+
+  @override
+  Stream<SnappedLocation> get onSnappedLocation {
+    _onSnappedLocation ??= _snappedLocationChannel.receiveBroadcastStream().map(
+      (event) => SnappedLocation.fromJson(_asMap(event)),
+    );
+    return _onSnappedLocation!;
   }
 }

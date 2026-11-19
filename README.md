@@ -17,9 +17,9 @@ either from the plugin itself or from your own navigation SDK.
 | iOS | 14.0 |
 | Network | Internet access to the alert service |
 
-The plugin pulls the native engine automatically:
-Android `com.github.mapzone-global:mapzone_speed_alert_android:2.0.6` (JitPack),
-iOS `MapZoneSpeedAlertSDK` `2.0.5` (CocoaPods).
+> **Upgrading from 1.0.x?** 2.0.0 signs a user in (`identity` replaces
+> `vehicleId`), changes the vehicle-type numbers and takes the weight in
+> tonnes. See [Migrating from 1.0.x to 2.0.0](#migrating-from-10x-to-200).
 
 The plugin does **not** draw a map. In mode A it captures GPS and can request
 location permission for you; in mode B your app owns GPS and permissions.
@@ -52,7 +52,7 @@ Keep `apiKey` out of source control (e.g. a git-ignored Dart file,
 
 ```yaml
 dependencies:
-  mapzone_speed_alert: ^1.0.0
+  mapzone_speed_alert: ^2.0.0
 ```
 
 ### Android
@@ -113,29 +113,52 @@ usage descriptions to `ios/Runner/Info.plist`:
 
 ## Integration guide
 
-### 1. Initialize once
+### 1. Initialize — signs the user in
 
 ```dart
 import 'dart:async';
 
+import 'package:flutter/services.dart';
 import 'package:mapzone_speed_alert/mapzone_speed_alert.dart';
 
 final alert = MapZoneSpeedAlert.instance;
 
-await alert.initialize(const AlertConfig(
-  baseUrl: 'https://driving.map.zone',
-  apiKeyId: 'your-api-key-id',        // from MapZone
-  apiKey: 'your-api-key',             // from MapZone
-  vehicleId: 'your-vehicle-id',       // your own identifier for this vehicle
-  vehicleType: VehicleType.car,       // see "Vehicle types"
-  seats: 4,
-  weight: 1500,                       // kg
-));
+try {
+  await alert.initialize(AlertConfig(
+    baseUrl: 'https://driving.map.zone',
+    apiKeyId: 'your-api-key-id',          // from MapZone
+    apiKey: 'your-api-key',               // from MapZone
+    identity: signedInUser.phoneNumber,   // who is signed in — see "Identity"
+    vehicleType: VehicleType.car,         // see "Vehicle types"
+    seats: 4,
+    weightTons: 1.5,                      // TONNES
+    metadata: {'appVersion': '1.4.0'},    // optional
+  ));
+} on PlatformException catch (e) {
+  // INVALID_CONFIGURATION: an input was rejected (e.message says which);
+  // nothing was applied — the previous configuration, zone and signs stay.
+  // CONFIGURE_FAILED: non-https baseUrl.
+}
 ```
 
-`initialize` throws `PlatformException(CONFIGURE_FAILED)` when the native SDK
-rejects the configuration, for example a non-https `baseUrl`. Use
-`configureVehicle(...)` to change the vehicle profile later.
+Call `initialize` when the user signs in **and on every app launch** with a
+user already signed in — the SDK does not remember the identity across
+launches. Its failures arrive on `onResult`. Use `configureVehicle(...)` to change the vehicle profile later
+(same identity), and `logout()` when the user signs out — see
+[Sessions](#sessions-sign-in-and-sign-out).
+
+#### Identity
+
+Whoever is signed in on this device, sent verbatim — typically the account's
+phone number in `+84…` form. Pick one format and keep it: `"0901234567"` and
+`"+84901234567"` are two different users. Non-empty, at most 128 characters, no
+`"` and no control characters.
+
+#### Metadata
+
+**It is optional**. Agree the key names with Vietmap. One JSON object, at most 2048 UTF-8 bytes, nesting depth at most 16.
+Re-initializing with the same identity keeps the metadata stored at sign-in; to
+record new metadata the user has to sign out and in again.
 
 ### 2. Listen to the streams
 
@@ -147,10 +170,19 @@ final subs = <StreamSubscription<Object>>[
   alert.onRestriction.listen((e) => setState(() => _restriction = e)),
   alert.onReady.listen((r) => debugPrint('zone ready: ${r.linkCount} links')),
   alert.onResult.listen((r) {
-    if (!r.success) debugPrint('alert ${r.errorCode}: ${r.errorMessage}');
+    if (r.errorCode == MapZoneErrorCode.sessionMoved) {
+      // Signed in on another device: sign out here and ask to sign in again.
+      alert.logout();
+      showSignedInElsewhereDialog();
+    } else if (!r.success) {
+      debugPrint('alert ${r.errorCode}: ${r.errorMessage}');
+    }
   }),
 ];
 ```
+
+Draw a vehicle marker from `onSnappedLocation` if you show a map: each matched
+fix, moved onto the road, with the road bearing.
 
 Listen to `onVoice` only if you play clips yourself — see
 [Voice alerts](#voice-alerts).
@@ -197,7 +229,36 @@ for (final s in subs) { await s.cancel(); }
 
 `reset()` also stops native GPS and unconfigures the engine: call
 `initialize` again before `start()` or `processExternalLocation`, which are
-otherwise rejected or ignored.
+otherwise rejected or ignored. `reset()` does **not** sign the user out.
+
+### 5. Sign out
+
+```dart
+final result = await alert.logout();
+if (!result.success) {
+  // e.g. offline: zone fetches already stopped; call logout() again later.
+}
+```
+
+## Sessions (sign in and sign out)
+
+```
+initialize(identity) ──► signed in (the SDK logs in, in the background)
+        │                    │ 2006 / 2007 / 2005 / … on onResult, once ──► zone fetches stop
+        │                    │                                             (loaded zone keeps alerting)
+        └── logout() ────────┴─► zone fetches stop at once ─► server logout ─► AlertResult(success)
+```
+
+- One identity is active on one device at a time. Signing the same identity in
+  on another device moves the session there and this device receives `2006`
+  (`MapZoneErrorCode.sessionMoved`): call `logout()` (treated as success) and
+  send the user back to sign in.
+- Switching to a **different** identity on the same device is allowed only 20
+  minutes after this device last opened a session (`2008` otherwise).
+- A sign-in that fails for network or server reasons does not stop alerts; the
+  SDK retries it before a later zone fetch.
+- After `logout()`, `configureVehicle` throws `NOT_INITIALIZED`: signing back in
+  always goes through `initialize`.
 
 ### Drawing signs
 
@@ -232,30 +293,29 @@ or `exceeding`.
 | `baseUrl` | `String` | yes | Service base URL, must be `https`, e.g. `https://driving.map.zone`. |
 | `apiKeyId` | `String` | yes | API key id issued for your application id. |
 | `apiKey` | `String` | yes | API key secret. |
-| `vehicleId` | `String` | yes | Your identifier for the vehicle. |
+| `identity` | `String` | yes | Who is signed in — see [Identity](#identity). |
 | `vehicleType` | `VehicleType` | no | Vehicle class, default `VehicleType.car`. |
-| `seats` | `int` | no | Number of seats, default `4`. |
-| `weight` | `int` | no | Vehicle weight in **kilograms**, default `1500`. |
+| `seats` | `int` | no | Number of seats, 0 or more, default `4`. |
+| `weightTons` | `double` | no | Gross weight in **tonnes**, 0 or more, default `1.5`. |
+| `metadata` | `Map<String, Object?>?` | no | Stored with the session — see [Metadata](#metadata). |
 
 There is no bundle-id field — see [Application id](#application-id).
 
 ### Vehicle types
 
-| `VehicleType` | Code |
+| `VehicleType` | Server code |
 |---|---|
 | `car` | 1 |
-| `motorcycle` | 2 |
-| `truck` | 3 |
+| `taxi` | 2 |
+| `bus` | 3 |
 | `coach` | 4 |
-| `bus` | 5 |
-| `taxi` | 6 |
-| `bicycle` | 7 |
-| `pedestrian` | 8 |
-| `emergency` | 9 |
+| `truck` | 5 |
+| `motorcycle` | 7 |
 
-The type, seats and weight decide which speed limits apply. Not every type
-supports speed alerts; an unsupported type is reported on `onResult` with
-error [`3003`](#error-codes).
+`value` is the MapZone server's own code, sent unchanged. `VehicleType.fromValue`
+returns `null` for a code it does not know. The type, seats and weight decide
+which speed limits apply. The type must be enabled for your API key, otherwise
+sign-in reports `1001` and zone requests [`3003`](#error-codes).
 
 ### processExternalLocation
 
@@ -275,8 +335,9 @@ All members are on `MapZoneSpeedAlert.instance`.
 
 | Method | Description |
 |---|---|
-| `initialize(AlertConfig)` | Credentials + vehicle profile. Call once before providing GPS. |
-| `configureVehicle({vehicleType, seats, weight})` | Change the vehicle profile at runtime; mute and voice settings are kept. |
+| `initialize(AlertConfig)` | Credentials, identity (signs in) and vehicle profile. Call before providing GPS, on every sign-in and app launch. |
+| `configureVehicle({vehicleType, seats, weightTons})` | Change the vehicle profile at runtime, same identity; mute and voice settings are kept. Throws `NOT_INITIALIZED` after `logout()` until the next `initialize`. |
+| `logout()` | Sign the identity out of this device; returns an `AlertResult`. |
 | `start()` / `stop()` | Mode A: native GPS capture on / off. `stop` keeps engine state. |
 | `processExternalLocation(...)` | Mode B: feed one GPS fix (~1 Hz). |
 | `updateZoneLocation(lat, lng)` | Lightweight zone-cache warm-up for a position. |
@@ -286,7 +347,6 @@ All members are on `MapZoneSpeedAlert.instance`.
 | `setVoiceSpeed(double)` | Built-in player speed, `1.0` = recorded, clamped to `0.5..2.0`, pitch kept. No effect while `onVoice` has a listener. Persists across `reset()`. |
 | `requestLocationPermissions()` / `hasLocationPermissions()` | Runtime location permission (mode A). |
 | `registerLifecycleObserver()` / `unregisterLifecycleObserver()` | Send app background / foreground to the native side. Reserved: the current native SDK ignores them. Safe to call more than once. |
-| `getLinkCoords(linkId)` | **Deprecated** — removed from the native SDK, always returns `null`. |
 
 ### Streams
 
@@ -298,6 +358,7 @@ All members are on `MapZoneSpeedAlert.instance`.
 | `onReady` | `ReadyEvent` | Zone data loaded for the current area. |
 | `onResult` | `AlertResult` | Outcome of each zone load, and native failures. |
 | `onLocation` | `AlertLocation` | Each native GPS fix (mode A). |
+| `onSnappedLocation` | `SnappedLocation` | Each processed fix that matched a road: `latitude`, `longitude` on the road, `bearingDegrees` of the road in the direction of travel. Computed only while listened to. |
 
 Distances are in metres. A distance of `0` means "currently on it".
 
@@ -338,7 +399,7 @@ closed to your vehicle and no-stopping at once.
 tolls and sign changes loaded).
 
 `AlertResult`: `success`, `errorCode`, `errorMessage` — see
-[Error codes](#error-codes). `isNetworkError` is `true` for negative codes.
+[Error codes](#error-codes) and the `MapZoneErrorCode` constants.
 
 `AlertLocation`: `latitude`, `longitude`, `speedKmh`, `bearing`, and optional
 `accuracy` (m) and `timestamp` (ms since epoch).
@@ -404,40 +465,90 @@ await alert.setMutedAlertTypes([]);  // announce everything again
 
 ## Error codes
 
-Reported in `AlertResult.errorCode`. `errorMessage` is an English sentence
-derived from the code — localise off the code.
+Reported in `AlertResult.errorCode`, named in `MapZoneErrorCode`. `errorMessage`
+is an English sentence derived from the code alone — localise off the code.
+Whatever the code, the zone already loaded keeps alerting; what changes is
+whether the SDK keeps fetching new zones. Codes that stop or pause fetching are
+reported **once**. Branch on the exact code — ranges no longer have one meaning.
 
-| Code | Meaning | What to check |
-|---|---|---|
-| `0` | Success | |
-| `1001` | Invalid parameter | Coordinates out of bounds or other bad input. |
-| `2003` | Unauthorized | Key expired, or application id / vehicle not in the key's scope — see [Application id](#application-id). |
-| `3003` | Unsupported vehicle type | `AlertConfig.vehicleType`. |
-| `-1` | Response could not be verified | Retry; contact MapZone if it persists. |
-| `-2` | Payload unusable | Retry; contact MapZone if it persists. |
-| `-3` | Secure session failed | Retry; contact MapZone if it persists. |
-| `-4` | Server unreachable | Network connection and `baseUrl`. |
-| `-5` | Native bridge failed | Rejected configuration or missing native ABI. |
+| Code | `MapZoneErrorCode` | Meaning | SDK |
+|---|---|---|---|
+| `0` | `success` | Zone data loaded / logged out | — |
+| `2006` | `sessionMoved` | The identity is now in use on another device | Stops until `initialize` |
+| `2007` | `locked` | Device or identity locked by an administrator | Stops until `initialize` |
+| `2002` / `2003` / `2004` | `invalidSignature` / `apiKeyNotAccepted` / `applicationIdNotAccepted` | Signature, API key or application id not accepted — see [Application id](#application-id) | Stops until `initialize` |
+| `2005` | `planExpired` | Service plan expired | Stops until `initialize` |
+| `2010` | `trialIdentityNotAllowed` | Trial key: identity is not one of its sample identities | Stops until `initialize` |
+| `3003` | `vehicleTypeNotAllowed` | Vehicle type not enabled for the API key | Stops until `initialize` |
+| `3011` / `3012` | `enterprisePlanRequired` / `newDeviceLimit` | Device limit of the API key reached | Stops until `initialize` |
+| `4001` | `requestQuotaExceeded` | Request quota used up | Stops until `initialize` |
+| `1002` | `missingParameter` | Missing parameter | Stops until `initialize` |
+| `1001` | `invalidRequest` | Sign-in: identity or vehicle rejected · Zone: request rejected (e.g. outside the served area) | Sign-in: stops · Zone: keeps going |
+| `2008` | `switchTooSoon` | Account on this device changed too recently | Pauses 20 minutes, then resumes |
+| `4000` / `5000` / `5004` / `2009` | `tooManyRequests` / `internalError` / `serviceStarting` / `tooManyNewSessions` | Server busy or failing | Backs off |
+| `2000` | `deviceClockWrong` | Device clock is wrong | Keeps going |
+| `-1` | `responseNotVerified` | Response could not be verified | Keeps going |
+| `-2` | `mapDataInvalid` | Map data empty, malformed or unusable | Keeps going |
+| `-3` | `secureSessionFailed` | Secure session could not be established; retried | Keeps going |
+| `-4` | `serverUnreachable` | Server unreachable — check connectivity | Keeps going |
+| `-5` / `-99` | `bridgeFailed` / `bridgeFailedLegacy` | Native bridge failed (e.g. library missing for this device's ABI) | — |
+| `-6` | `notLoggedIn` | Nobody signed in (`logout` called, or `initialize` never was) | Stops until `initialize` |
+| `-8` | `deviceNotReady` | Device cannot be read yet (e.g. iPhone not unlocked since restart); show a notice | Pauses, retries about once a minute |
+| `-100` | `locationUnavailable` | **Plugin, mode A:** no position — a location error on iOS, or no location source left on Android after `start()` succeeded | Alerts wait for the next fix |
+| `-101` | `locationPermissionDenied` | **Plugin, mode A, iOS only:** location permission denied or restricted; send the user to the system settings | GPS capture stops; call `start()` again after permission is granted |
 
-## Example app
+Codes `-100`…`-199` belong to this plugin (its native GPS capture), never to
+the native SDK, so they cannot clash with the SDK's own negative codes.
+`errorMessage` is a fixed English sentence; the platform's own wording only
+goes to the log.
 
-[`example/`](example) is a single-screen demo built on
-`vietmap_flutter_navigation` that shows both GPS modes:
+## Migrating from 1.0.x to 2.0.0
 
-- **No destination — mode A:** `start()` captures raw GPS, no route.
-- **Destination picked — mode B:** search a destination, build and draw the
-  route, then drive it (simulated by default; toggle in the settings dialog).
-  The snapped GPS is fed in with `processExternalLocation`.
+```
+  1.0.x                                         2.0.0
+  ─────                                         ─────
+  AlertConfig(vehicleId:, weight: 1500 /*kg*/) ──► AlertConfig(identity:, weightTons: 1.5, metadata:)
+  VehicleType.truck.value == 3                 ──► VehicleType.truck.value == 5 (server codes)
+  configureVehicle(weight:)                    ──► configureVehicle(weightTons:)
+  (no sign-out)                                ──► logout() on sign-out and after 2006
+  isExpiredApiKey / isNetworkError             ──► exact codes, MapZoneErrorCode
+```
 
-Speed-limit, camera and toll signs render as a HUD, a speed chip shows the
-speed status with the restriction signs under it, and a floating button mutes
-voice categories. The example plays voice clips itself by listening to
-`onVoice` (priority queue on `audioplayers`, see
-[`example/lib/voice_queue.dart`](example/lib/voice_queue.dart)). The vehicle
-profile is set from the settings dialog.
+1. `pubspec.yaml`: `mapzone_speed_alert: ^2.0.0`; iOS: `cd ios && pod update MapZoneSpeedAlertSDK`.
+2. **`vehicleId` → `identity`.** Pass who is signed in on this device (see
+   [Identity](#identity)), on every sign-in and every app launch. Do not reuse a
+   vehicle id shared by several devices: they would sign each other out with
+   `2006`.
+3. **Weight in tonnes:** `weight: 1500` (kg) → `weightTons: 1.5`. The server has
+   always read the number as tonnes.
+4. **Vehicle types:** the enum names stay, the numbers are now the server's
+   codes. If you stored the old number, convert it with this table — do **not**
+   call `VehicleType.fromValue(oldNumber)` (`fromValue(3)` is now `bus`):
 
-Fill your Speed Alert credentials and the map API key in
-`example/lib/env.dart` before running.
+   | Vehicle | Old code (1.0.x) | 2.0.0 |
+   |---|---|---|
+   | Car | 1 | `VehicleType.car` (1) |
+   | Motorcycle | 2 | `VehicleType.motorcycle` (7) |
+   | Truck | 3 | `VehicleType.truck` (5) |
+   | Coach | 4 | `VehicleType.coach` (4) |
+   | Bus | 5 | `VehicleType.bus` (3) |
+   | Taxi | 6 | `VehicleType.taxi` (2) |
+   | Bicycle / pedestrian / emergency | 7 / 8 / 9 | removed — contact Vietmap |
+
+   `fromValue` returns `null` for an unknown code (it fell back to `car`).
+   Speed limits and alerts for non-car vehicles change after upgrading: 1.0.x
+   sent the old numbers, which the server read as other vehicle types.
+5. **Errors:** catch `PlatformException(INVALID_CONFIGURATION)` from
+   `initialize` / `configureVehicle`. In `onResult`, branch on exact codes
+   (`MapZoneErrorCode`); `isExpiredApiKey`, `codeExpiredApiKey`,
+   `codeInvalidParameter` and `isNetworkError` are removed (their codes changed
+   meaning). Handle `2006`, `2007`, `2008`, `-6` and `-8` in your UI.
+6. **Sign out:** call `logout()` when the user signs out, and after `2006`.
+7. Optional: `onSnappedLocation` for an on-road vehicle marker.
+8. **Store privacy forms:** the SDK now attaches a per-device identifier, and
+   locations travel with the signed-in identity. Declare *Device or other IDs*
+   and *Precise location* linked to the user (Google Play Data safety / App
+   Store privacy details), for app functionality.
 
 ## Migrating from mapzone_flutter_alert_plugin 0.0.x
 

@@ -7,18 +7,25 @@ import '../models/vehicle_profile.dart';
 /// What the settings dialog returns.
 class SettingsResult {
   const SettingsResult({
+    required this.identity,
     required this.vehicle,
     required this.simulate,
     required this.speedMultiplier,
+    this.signOut = false,
   });
 
+  final String identity;
   final VehicleProfile vehicle;
   final bool simulate;
   final double speedMultiplier;
+
+  /// The user tapped "Đăng xuất"; the other fields are the values on screen.
+  final bool signOut;
 }
 
-/// Vehicle profile + route simulation, in one dialog reached from the settings
-/// FAB — the same place the MapZone Android app puts them.
+/// Account (identity) + vehicle profile + route simulation, in one dialog
+/// reached from the settings FAB — the same place the MapZone Android app puts
+/// them.
 ///
 /// Simulation speed is a *multiplier*, not km/h: `vietmap_flutter_navigation`
 /// only exposes `setSpeedMultiplier`, so the km/h presets the Android app offers
@@ -27,11 +34,15 @@ class SettingsResult {
 class SettingsDialog extends StatefulWidget {
   const SettingsDialog({
     super.key,
+    required this.identity,
+    required this.signedIn,
     required this.vehicle,
     required this.simulate,
     required this.speedMultiplier,
   });
 
+  final String identity;
+  final bool signedIn;
   final VehicleProfile vehicle;
   final bool simulate;
   final double speedMultiplier;
@@ -44,30 +55,41 @@ class _SettingsDialogState extends State<SettingsDialog> {
   static const List<double> _presets = [1, 1.5, 2, 3];
 
   late VehicleType _type = widget.vehicle.type;
-  late final TextEditingController _seats =
-      TextEditingController(text: widget.vehicle.seats.toString());
-  late final TextEditingController _weight =
-      TextEditingController(text: widget.vehicle.weightKg.toString());
+  late final TextEditingController _identity = TextEditingController(
+    text: widget.identity,
+  );
+  late final TextEditingController _seats = TextEditingController(
+    text: widget.vehicle.seats.toString(),
+  );
+  late final TextEditingController _weight = TextEditingController(
+    text: _fmt(widget.vehicle.weightTons),
+  );
   late bool _simulate = widget.simulate;
   late double _multiplier = widget.speedMultiplier;
 
   @override
   void dispose() {
+    _identity.dispose();
     _seats.dispose();
     _weight.dispose();
     super.dispose();
   }
 
-  void _save() {
+  void _save({bool signOut = false}) {
     Navigator.of(context).pop(
       SettingsResult(
+        identity: _identity.text.trim(),
         vehicle: VehicleProfile(
           type: _type,
           seats: int.tryParse(_seats.text) ?? widget.vehicle.seats,
-          weightKg: int.tryParse(_weight.text) ?? widget.vehicle.weightKg,
+          // Accept a decimal comma as typed on a Vietnamese keyboard.
+          weightTons:
+              double.tryParse(_weight.text.replaceAll(',', '.')) ??
+              widget.vehicle.weightTons,
         ),
         simulate: _simulate,
         speedMultiplier: _multiplier,
+        signOut: signOut,
       ),
     );
   }
@@ -94,17 +116,36 @@ class _SettingsDialogState extends State<SettingsDialog> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
+              _label(theme, 'Tài khoản'),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _identity,
+                keyboardType: TextInputType.phone,
+                decoration: InputDecoration(
+                  labelText: 'Định danh (số điện thoại)',
+                  helperText: widget.signedIn
+                      ? 'Đã đăng nhập'
+                      : 'Chưa đăng nhập',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 16),
               _label(theme, 'Loại xe'),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
                 children: VehicleType.values
-                    .map((t) => _VehicleCard(
-                          type: t,
-                          selected: t == _type,
-                          onTap: () => setState(() => _type = t),
-                        ))
+                    .map(
+                      (t) => _VehicleCard(
+                        type: t,
+                        selected: t == _type,
+                        onTap: () => setState(() => _type = t),
+                      ),
+                    )
                     .toList(),
               ),
               const SizedBox(height: 16),
@@ -114,7 +155,14 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 children: [
                   Expanded(child: _numberField(_seats, 'Chỗ ngồi', 3)),
                   const SizedBox(width: 8),
-                  Expanded(child: _numberField(_weight, 'Trọng tải (kg)', 6)),
+                  Expanded(
+                    child: _numberField(
+                      _weight,
+                      'Trọng tải (tấn)',
+                      6,
+                      decimal: true,
+                    ),
+                  ),
                 ],
               ),
               const SizedBox(height: 16),
@@ -129,17 +177,18 @@ class _SettingsDialogState extends State<SettingsDialog> {
               ),
               if (_simulate) ...[
                 const SizedBox(height: 4),
-                Text('Hệ số tốc độ mô phỏng',
-                    style: theme.textTheme.bodySmall),
+                Text('Hệ số tốc độ mô phỏng', style: theme.textTheme.bodySmall),
                 const SizedBox(height: 6),
                 Wrap(
                   spacing: 8,
                   children: _presets
-                      .map((m) => ChoiceChip(
-                            label: Text('${_fmt(m)}×'),
-                            selected: _multiplier == m,
-                            onSelected: (_) => setState(() => _multiplier = m),
-                          ))
+                      .map(
+                        (m) => ChoiceChip(
+                          label: Text('${_fmt(m)}×'),
+                          selected: _multiplier == m,
+                          onSelected: (_) => setState(() => _multiplier = m),
+                        ),
+                      )
                       .toList(),
                 ),
               ],
@@ -148,13 +197,21 @@ class _SettingsDialogState extends State<SettingsDialog> {
         ),
       ),
       actions: [
+        if (widget.signedIn)
+          TextButton(
+            onPressed: () => _save(signOut: true),
+            child: const Text('Đăng xuất'),
+          ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Huỷ'),
         ),
         TextButton(
-          onPressed: _save,
-          child: const Text('Lưu', style: TextStyle(fontWeight: FontWeight.w600)),
+          onPressed: () => _save(),
+          child: const Text(
+            'Lưu',
+            style: TextStyle(fontWeight: FontWeight.w600),
+          ),
         ),
       ],
     );
@@ -164,26 +221,32 @@ class _SettingsDialogState extends State<SettingsDialog> {
       m == m.roundToDouble() ? m.toStringAsFixed(0) : m.toString();
 
   Widget _label(ThemeData theme, String text) => Text(
-        text,
-        style: theme.textTheme.labelLarge
-            ?.copyWith(color: theme.colorScheme.primary),
-      );
+    text,
+    style: theme.textTheme.labelLarge?.copyWith(
+      color: theme.colorScheme.primary,
+    ),
+  );
 
-  Widget _numberField(TextEditingController c, String label, int maxLen) =>
-      TextField(
-        controller: c,
-        keyboardType: TextInputType.number,
-        inputFormatters: [
-          FilteringTextInputFormatter.digitsOnly,
-          LengthLimitingTextInputFormatter(maxLen),
-        ],
-        decoration: InputDecoration(
-          labelText: label,
-          border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12)),
-          isDense: true,
-        ),
-      );
+  Widget _numberField(
+    TextEditingController c,
+    String label,
+    int maxLen, {
+    bool decimal = false,
+  }) => TextField(
+    controller: c,
+    keyboardType: TextInputType.numberWithOptions(decimal: decimal),
+    inputFormatters: [
+      decimal
+          ? FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))
+          : FilteringTextInputFormatter.digitsOnly,
+      LengthLimitingTextInputFormatter(maxLen),
+    ],
+    decoration: InputDecoration(
+      labelText: label,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+      isDense: true,
+    ),
+  );
 }
 
 class _VehicleCard extends StatelessWidget {

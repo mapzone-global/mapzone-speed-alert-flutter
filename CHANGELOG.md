@@ -1,3 +1,59 @@
+## 2.0.0
+
+Native SDK 3.0.1: signed-in sessions. See the README section *Migrating from
+1.0.x to 2.0.0*.
+
+**Breaking**
+
+* `AlertConfig.vehicleId` → `identity` (who is signed in on this device).
+  `initialize` signs it in; call it on every sign-in and every app launch.
+* `AlertConfig.weight` (int, kg) → `weightTons` (double, tonnes);
+  `configureVehicle(weight:)` → `configureVehicle(weightTons:)`.
+* `VehicleType` values are now the server's codes: `car` 1, `taxi` 2, `bus` 3,
+  `coach` 4, `truck` 5, `motorcycle` 7. `bicycle`, `pedestrian` and `emergency`
+  are removed. `VehicleType.fromValue` returns `null` for an unknown code
+  instead of `car`.
+* `initialize` / `configureVehicle` throw
+  `PlatformException(INVALID_CONFIGURATION)` with the SDK's reason when an input
+  is rejected; nothing is applied and the previous configuration stays in
+  effect, and the loaded zone and signs are left as they were.
+  `configureVehicle` before `initialize`, or after `logout`, throws
+  `NOT_INITIALIZED`.
+* Removed `AlertResult.codeExpiredApiKey`, `isExpiredApiKey`,
+  `codeInvalidParameter` and `isNetworkError`: their codes changed meaning in
+  the native SDK. Use `MapZoneErrorCode`.
+
+**Added**
+
+* `logout()` → `Future<AlertResult>`: signs the identity out; zone fetches stop
+  at once.
+* `AlertConfig.metadata` (`Map<String, Object?>?`), stored with the session.
+* `onSnappedLocation` stream + `SnappedLocation`: each matched fix on the road,
+  with the road bearing. Computed natively only while listened to.
+* `MapZoneErrorCode`: every code of the native 3.0.1 table, including the
+  session codes `2006`, `2007`, `2008`, `2010`, `3011`, `3012`, `4001`, `-6`,
+  `-8`.
+
+**Changed**
+
+* Android native GPS capture (`start()`): Fused Location when Play Services is
+  usable, otherwise the OS `gps` + `network` providers (network only while GPS
+  is silent), instead of the `gps` provider alone — fixes now arrive indoors.
+  Without a heading, or below 1 m/s, the last heading is kept instead of `0`.
+  Adds a dependency on `play-services-location` 21.3.0. iOS unchanged.
+  `start()` now fails with `NO_LOCATION_SERVICE` when no source can start
+  (was `LOCATION_ERROR`); a source lost after a successful start is reported on
+  `onResult` as `MapZoneErrorCode.locationUnavailable`. Coordinates are logged
+  only in debuggable builds.
+* Native GPS capture errors are reported on `onResult` with plugin codes
+  `-100` (`locationUnavailable`, both platforms) and `-101`
+  (`locationPermissionDenied`, iOS only) instead of `-1`, which is the native
+  SDK's "response could not be verified". iOS no longer reports "Always authorization required for
+  background location" while capture runs with when-in-use permission.
+* Example app: identity field and sign-out in the settings dialog, a
+  "signed in elsewhere" dialog on `2006`, weight in tonnes, the six vehicle
+  types.
+
 ## 1.0.0
 
 Native SDK upgrade and package rename. See the README section

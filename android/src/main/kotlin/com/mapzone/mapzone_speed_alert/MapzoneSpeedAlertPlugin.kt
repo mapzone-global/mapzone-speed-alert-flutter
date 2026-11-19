@@ -1,14 +1,12 @@
 package com.mapzone.mapzone_speed_alert
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -28,7 +26,9 @@ import map.zone.speedalertsdk.BitmapCallback
 import map.zone.speedalertsdk.BuildupAreaCallback
 import map.zone.speedalertsdk.ReadyCallback
 import map.zone.speedalertsdk.ResultCallback
+import map.zone.speedalertsdk.SnappedLocationCallback
 import map.zone.speedalertsdk.StopRestrictionCallback
+import map.zone.speedalertsdk.VehicleType
 import map.zone.speedalertsdk.VoiceAlertType
 import map.zone.speedalertsdk.VoiceCallback
 import map.zone.speedalertsdk.VoiceProfile
@@ -44,7 +44,8 @@ import java.util.concurrent.Executors
  * whole lifetime: `initialize` / `configureVehicle` reset and re-configure it
  * instead of building a new one.
  *
- * GPS is captured with the Android framework [LocationManager].
+ * GPS (Approach A) is captured by [PluginLocationCapture]: Fused Location when
+ * Play Services is usable, otherwise the OS `gps` + `network` providers.
  *
  * Voice: the SDK plays clips through its built-in player until Dart listens to
  * the `voice` channel; while that listener exists the clips are forwarded to
@@ -57,8 +58,13 @@ class MapzoneSpeedAlertPlugin :
         const val CHANNEL = "mapzone_speed_alert"
         const val TAG = "MapZoneSpeedAlert"
         const val PERMISSION_REQUEST_CODE = 4021
-        const val MIN_TIME_MS = 1000L
-        const val MIN_DISTANCE_M = 0f
+
+        // Plugin-side result codes, mirrored in Dart `MapZoneErrorCode` and the
+        // iOS plugin. The -100…-199 range never overlaps the native SDK's codes.
+        // -101 (permission lost) is iOS only: revoking a runtime permission on
+        // Android kills the process.
+        const val ERROR_LOCATION_UNAVAILABLE = -100
+        const val MESSAGE_LOCATION_UNAVAILABLE = "Location is unavailable on this device."
     }
 
     private lateinit var appContext: Context
@@ -80,9 +86,15 @@ class MapzoneSpeedAlertPlugin :
     private lateinit var locationStream: CallbackStream
     private lateinit var voiceStream: CallbackStream
     private lateinit var restrictionStream: CallbackStream
+    private lateinit var snappedLocationStream: CallbackStream
 
-    private var systemLocationManager: LocationManager? = null
-    private var locationListener: LocationListener? = null
+    // Native GPS capture (Approach A) and the heading it last sent.
+    private var locationCapture: PluginLocationCapture? = null
+    private var bearingHold = BearingHold()
+
+    private val isDebuggable: Boolean by lazy {
+        (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    }
 
     // Whether this engine configured the native engine. Flutter attaches the
     // plugin to every engine (background isolates too), so teardown must only
@@ -95,14 +107,10 @@ class MapzoneSpeedAlertPlugin :
     // over — or clear them on detach.
     private var callbacksInstalled = false
 
-    // Cached engine config so configureVehicle can re-configure.
-    private var baseUrl = ""
-    private var apiKeyId = ""
-    private var apiKey = ""
-    private var vehicleId = ""
-    private var vehicleType = 1
-    private var seats = 4
-    private var weight = 1500.0
+    // The configuration the engine last accepted, so configureVehicle can
+    // re-configure with the same identity. A rejected configure leaves it as
+    // it was, matching the SDK, which keeps the previous configuration.
+    private var appliedConfig: EngineConfig? = null
 
     // Voice preferences live here as well as in the engine and are re-applied
     // after every configure, so a configureVehicle can never silently undo
@@ -147,6 +155,13 @@ class MapzoneSpeedAlertPlugin :
             messenger, "restriction",
             onOpen = { encoder.execute { restrictionStream.send(restriction.toMap()) } },
         )
+        // The SDK only makes the snapped-location upcall while a callback is
+        // set, so it is installed for as long as Dart listens.
+        snappedLocationStream = stream(
+            messenger, "snapped",
+            onOpen = { mgr.setSnappedLocationCallback(snappedLocationCallback) },
+            onClose = { mgr.setSnappedLocationCallback(null) },
+        )
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -180,16 +195,31 @@ class MapzoneSpeedAlertPlugin :
             "getPlatformVersion" ->
                 result.success("Android ${Build.VERSION.RELEASE}")
 
-            "initialize" -> {
-                readConfig(call)
-                applyConfig(result)
-            }
+            "initialize" -> applyConfig(EngineConfig.fromCall(call), result)
 
             "configureVehicle" -> {
-                vehicleType = call.argument<Number>("vehicleType")?.toInt() ?: vehicleType
-                seats = call.argument<Number>("seats")?.toInt() ?: seats
-                weight = call.argument<Number>("weight")?.toDouble() ?: weight
-                applyConfig(result)
+                val applied = appliedConfig
+                if (applied == null) {
+                    result.error(
+                        "NOT_INITIALIZED", "Call initialize() before configureVehicle().", null
+                    )
+                    return
+                }
+                applyConfig(applied.withVehicle(call), result)
+            }
+
+            "logout" -> {
+                // Signed out means configureVehicle can no longer sign anyone
+                // back in: only initialize does. Forgotten even if the request
+                // fails — the SDK is signed out locally either way.
+                appliedConfig = null
+                mgr.logout(object : ResultCallback {
+                    // The SDK reports on the main thread.
+                    override fun onResult(success: Boolean, errorCode: Int, errorMessage: String?) {
+                        Log.d(TAG, "logout success=$success code=$errorCode")
+                        result.success(resultMap(success, errorCode, errorMessage))
+                    }
+                })
             }
 
             "start" -> startTracking(result)
@@ -272,37 +302,38 @@ class MapzoneSpeedAlertPlugin :
 
     // MARK: - Engine setup & SDK callbacks
 
-    private fun readConfig(call: MethodCall) {
-        baseUrl = call.argument<String>("baseUrl") ?: ""
-        apiKeyId = call.argument<String>("apiKeyId") ?: ""
-        apiKey = call.argument<String>("apiKey") ?: ""
-        vehicleId = call.argument<String>("vehicleId") ?: ""
-        vehicleType = call.argument<Number>("vehicleType")?.toInt() ?: 1
-        seats = call.argument<Number>("seats")?.toInt() ?: 4
-        // Dart sends weight as int; configure() wants Double.
-        weight = call.argument<Number>("weight")?.toDouble() ?: 1500.0
-    }
-
     /**
-     * Reset the engine and configure it with the cached config. The SDK
-     * resolves the host application id itself, so it must match the id
-     * registered for the API key.
+     * Reset the engine and configure it with [config]. The SDK resolves the
+     * host application id itself, so it must match the id registered for the
+     * API key. Signing the identity in then runs in the background inside the
+     * SDK; its outcome arrives on the `result` channel.
      */
-    private fun applyConfig(result: Result) {
+    private fun applyConfig(config: EngineConfig, result: Result) {
+        // Unknown codes never reach the SDK, whose enum has no value for them.
+        val vehicleType = VehicleType.fromValue(config.vehicleTypeCode)
+        if (vehicleType == null) {
+            result.error(
+                "INVALID_CONFIGURATION",
+                "Unsupported vehicle type code ${config.vehicleTypeCode}.",
+                null
+            )
+            return
+        }
         if (!callbacksInstalled) {
             wireCallbacks()
             callbacksInstalled = true
         }
-        mgr.reset()
-        resetImageCache()
-        clearRestriction()
+        // Identity and metadata are personal data: never logged.
         Log.d(
             TAG,
-            "configure baseUrl=$baseUrl vehicleId=$vehicleId " +
-                "type=$vehicleType seats=$seats weight=$weight"
+            "configure type=${config.vehicleTypeCode} seats=${config.seats} " +
+                "weightTons=${config.weightTons}"
         )
-        try {
-            mgr.configure(baseUrl, apiKeyId, apiKey, vehicleId, vehicleType, seats, weight)
+        val rejection = try {
+            mgr.configure(
+                config.baseUrl, config.apiKeyId, config.apiKey, config.identity,
+                vehicleType, config.seats, config.weightTons, config.metadataJson
+            )
         } catch (e: RuntimeException) {
             // IllegalArgumentException (non-https baseUrl) or
             // IllegalStateException (host application id unresolvable).
@@ -310,6 +341,20 @@ class MapzoneSpeedAlertPlugin :
             result.error("CONFIGURE_FAILED", e.message, null)
             return
         }
+        if (rejection != null) {
+            // Nothing was applied: the previous configuration (if any) stays
+            // in effect, and the loaded zone, signs and what this plugin
+            // remembers are left untouched.
+            result.error("INVALID_CONFIGURATION", rejection, null)
+            return
+        }
+        // Accepted: drop the zone loaded for the previous profile. The clear
+        // runs on the SDK's queue after the sign-in it just queued, and keeps
+        // the session.
+        mgr.reset()
+        resetImageCache()
+        clearRestriction()
+        appliedConfig = config
         // Re-apply the host's voice preferences before any GPS reaches it.
         mgr.setMutedAlertTypes(mutedTypes)
         mgr.setVoiceProfile(voiceProfile)
@@ -351,13 +396,7 @@ class MapzoneSpeedAlertPlugin :
         mgr.setResultCallback(object : ResultCallback {
             override fun onResult(success: Boolean, errorCode: Int, errorMessage: String?) {
                 Log.d(TAG, "onResult success=$success code=$errorCode message=$errorMessage")
-                resultStream.send(
-                    mapOf(
-                        "success" to success,
-                        "errorCode" to errorCode,
-                        "errorMessage" to errorMessage
-                    )
-                )
+                resultStream.send(resultMap(success, errorCode, errorMessage))
             }
         })
         mgr.setAccessRestrictionCallback(object : AccessRestrictionCallback {
@@ -387,6 +426,16 @@ class MapzoneSpeedAlertPlugin :
         if (wav == null || wav.isEmpty()) return
         voiceStream.send(mapOf("wav" to wav, "trigger" to trigger, "priority" to priority))
     }
+
+    private val snappedLocationCallback =
+        SnappedLocationCallback { latitude, longitude, bearingDegrees ->
+            snappedLocationStream.send(
+                mapOf("lat" to latitude, "lng" to longitude, "bearing" to bearingDegrees)
+            )
+        }
+
+    private fun resultMap(success: Boolean, errorCode: Int, errorMessage: String?) =
+        mapOf("success" to success, "errorCode" to errorCode, "errorMessage" to errorMessage)
 
     // MARK: - Restriction signs
 
@@ -445,7 +494,6 @@ class MapzoneSpeedAlertPlugin :
 
     // MARK: - GPS capture (Approach A)
 
-    @SuppressLint("MissingPermission")
     private fun startTracking(result: Result) {
         if (!configured) {
             result.error("NOT_INITIALIZED", "Call initialize() before start().", null)
@@ -456,51 +504,54 @@ class MapzoneSpeedAlertPlugin :
             return
         }
         stopLocationUpdates()
-        val lm = appContext.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
-        if (lm == null) {
-            result.error("NO_LOCATION_SERVICE", "LocationManager unavailable.", null)
-            return
+        // A new run starts from no heading, like the engine after reset.
+        bearingHold = BearingHold()
+        if (appContext.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "Only approximate location granted: fixes will be coarse, without speed or heading")
         }
-        val listener = object : LocationListener {
-            override fun onLocationChanged(location: Location) = handleLocation(location)
-            override fun onProviderEnabled(provider: String) {}
-            override fun onProviderDisabled(provider: String) {}
-
-            @Deprecated("Deprecated in Java")
-            override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {
-            }
-        }
-        try {
-            lm.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER, MIN_TIME_MS, MIN_DISTANCE_M,
-                listener, Looper.getMainLooper()
+        val capture = PluginLocationCapture(appContext, ::handleLocation) {
+            // Same channel, code and sentence as the iOS plugin.
+            resultStream.send(
+                resultMap(false, ERROR_LOCATION_UNAVAILABLE, MESSAGE_LOCATION_UNAVAILABLE)
             )
-        } catch (e: Exception) {
-            result.error("LOCATION_ERROR", e.message, null)
+        }
+        if (!capture.start()) {
+            result.error("NO_LOCATION_SERVICE", "No location source could be started.", null)
             return
         }
-        systemLocationManager = lm
-        locationListener = listener
+        locationCapture = capture
         result.success(null)
     }
 
     private fun handleLocation(location: Location) {
         val lat = location.latitude
         val lng = location.longitude
-        val bearing = location.bearing.toDouble()
-        val accuracy = location.accuracy.toDouble()
-        // Location.speed is m/s; the SDK expects km/h.
-        val speed = location.speed.toDouble() * 3.6
-        Log.d(TAG, "gps lat=$lat lng=$lng spd=$speed acc=$accuracy")
-        mgr.updateLocation(lat, lng, speed, bearing)
+        // A fix without speed reports 0 for it anyway, but say so explicitly:
+        // the same goes for bearing, where 0 is a real heading (north).
+        val speedMetersPerSecond = if (location.hasSpeed()) location.speed.toDouble() else 0.0
+        val speedKmh = speedMetersPerSecond * 3.6
+        val bearing = bearingHold.bearingFor(
+            location.hasBearing(), location.bearing.toDouble(), speedMetersPerSecond
+        )
+        val accuracy = if (location.hasAccuracy()) location.accuracy.toDouble() else 0.0
+        // Coordinates only in debuggable builds: release logs carry no location.
+        if (isDebuggable) {
+            Log.d(
+                TAG,
+                "gps provider=${location.provider} lat=$lat lng=$lng spd=$speedKmh acc=$accuracy"
+            )
+        }
+        mgr.updateLocation(lat, lng, speedKmh, bearing)
         // The engine times voice throttling and stop detection against the
         // fix's own clock, never the time this callback ran.
-        mgr.processGps(lat, lng, bearing, speed, accuracy, location.time)
+        mgr.processGps(lat, lng, bearing, speedKmh, accuracy, location.time)
         locationStream.send(
             mapOf(
                 "lat" to lat,
                 "lng" to lng,
-                "speedKmh" to speed,
+                "speedKmh" to speedKmh,
                 "bearing" to bearing,
                 "accuracy" to accuracy,
                 "timestamp" to location.time
@@ -509,9 +560,8 @@ class MapzoneSpeedAlertPlugin :
     }
 
     private fun stopLocationUpdates() {
-        locationListener?.let { systemLocationManager?.removeUpdates(it) }
-        locationListener = null
-        systemLocationManager = null
+        locationCapture?.stop()
+        locationCapture = null
     }
 
     // MARK: - Permissions
@@ -594,6 +644,46 @@ class MapzoneSpeedAlertPlugin :
         pendingPermissionResult?.success(granted)
         pendingPermissionResult = null
         return true
+    }
+}
+
+/**
+ * One `configure` call's inputs, as sent by Dart. [vehicleTypeCode] is the
+ * server's vehicle code; [metadataJson] is already JSON-encoded by Dart (the
+ * SDK validates it).
+ */
+private data class EngineConfig(
+    val baseUrl: String,
+    val apiKeyId: String,
+    val apiKey: String,
+    val identity: String,
+    val vehicleTypeCode: Int,
+    val seats: Int,
+    val weightTons: Double,
+    val metadataJson: String?,
+) {
+    /** The same identity and keys with the vehicle fields of [call]. */
+    fun withVehicle(call: MethodCall) = copy(
+        vehicleTypeCode = call.argument<Number>("vehicleType")?.toInt() ?: vehicleTypeCode,
+        seats = call.argument<Number>("seats")?.toInt() ?: seats,
+        weightTons = call.argument<Number>("weightTons")?.toDouble() ?: weightTons,
+    )
+
+    // Credentials and identity must never appear in logs.
+    override fun toString() =
+        "EngineConfig(type=$vehicleTypeCode, seats=$seats, weightTons=$weightTons)"
+
+    companion object {
+        fun fromCall(call: MethodCall) = EngineConfig(
+            baseUrl = call.argument<String>("baseUrl") ?: "",
+            apiKeyId = call.argument<String>("apiKeyId") ?: "",
+            apiKey = call.argument<String>("apiKey") ?: "",
+            identity = call.argument<String>("identity") ?: "",
+            vehicleTypeCode = call.argument<Number>("vehicleType")?.toInt() ?: 1,
+            seats = call.argument<Number>("seats")?.toInt() ?: 4,
+            weightTons = call.argument<Number>("weightTons")?.toDouble() ?: 1.5,
+            metadataJson = call.argument<String>("metadata"),
+        )
     }
 }
 

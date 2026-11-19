@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -59,10 +60,23 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   bool get _running => _navigating || _alertOnly;
 
+  StreamSubscription<AlertResult>? _sessionEndedSub;
+  StreamSubscription<AlertResult>? _errorsSub;
+
+  // Fires once after Start in GPS-only mode if no fix has arrived yet.
+  Timer? _gpsWaitTimer;
+  static const Duration _gpsWaitTimeout = Duration(seconds: 15);
+
+  // The foreground-only warning is shown once per run, not on every tap.
+  bool _hasWarnedForegroundOnly = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    final alert = context.read<AlertController>();
+    _sessionEndedSub = alert.sessionEnded.listen(_onSessionEnded);
+    _errorsSub = alert.errors.listen(_onEngineError);
     // The embedded map activates its own location component as soon as it is
     // created and prompts on its own, so deferring our request to the Start
     // button buys nothing — the first prompt has already happened by then, and
@@ -87,8 +101,55 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _sessionEndedSub?.cancel();
+    _errorsSub?.cancel();
+    _gpsWaitTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  /// Put an engine failure on screen. 2006 has its own dialog.
+  void _onEngineError(AlertResult result) {
+    if (result.errorCode == MapZoneErrorCode.sessionMoved) return;
+    // Signed out (e.g. right after 2006): "nobody signed in" is expected, and
+    // the status line already says so.
+    if (result.errorCode == MapZoneErrorCode.notLoggedIn &&
+        !context.read<AlertController>().signedIn) {
+      return;
+    }
+    _snack('Lỗi ${result.errorCode}: ${result.errorMessage ?? 'không rõ'}');
+  }
+
+  /// The identity was signed in on another device (2006). The controller has
+  /// logged out; tell the user and offer the settings dialog to sign in again.
+  Future<void> _onSessionEnded(AlertResult result) async {
+    if (!mounted) return;
+    final signIn = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Đã đăng xuất'),
+        content: const Text(
+          'Tài khoản đang được dùng trên thiết bị khác. Đăng nhập lại để tiếp '
+          'tục tải dữ liệu cảnh báo (đăng nhập lại ngay có thể phải chờ 20 phút).',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Để sau'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Đăng nhập'),
+          ),
+        ],
+      ),
+    );
+    if (signIn != true || !mounted) return;
+    if (_running) {
+      _snack('Dừng cảnh báo trước, rồi đăng nhập lại trong Cài đặt.');
+      return;
+    }
+    await _openSettings();
   }
 
   /// The user may have granted the permission from the Settings app while we
@@ -113,8 +174,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (!perm.granted) {
       // Prompts for when-in-use, then for "Always".
       await perm.request();
-    } else if (!perm.always) {
+    } else if (!perm.always && Platform.isIOS) {
       // Foreground was granted on an earlier run; offer the background upgrade.
+      // iOS shows that prompt at most once ever (later calls return silently),
+      // so asking at launch is cheap and the snackbar on the first
+      // Start/recenter stays as the reminder. Android instead opens the
+      // full-screen Settings page on every request, so there the snackbar is
+      // the only reminder.
       await perm.requestAlways();
     }
   }
@@ -154,7 +220,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
 
     if (!mounted) return false;
-    if (perm.foregroundOnly) _warnForegroundOnly();
+    if (perm.foregroundOnly && !_hasWarnedForegroundOnly) {
+      _hasWarnedForegroundOnly = true;
+      _warnForegroundOnly();
+    }
     return true;
   }
 
@@ -164,7 +233,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       SnackBar(
         duration: const Duration(seconds: 6),
         content: const Text(
-            'Chỉ có quyền khi mở app — cảnh báo sẽ tắt khi khoá màn hình.'),
+          'Chỉ có quyền khi mở app — cảnh báo sẽ tắt khi khoá màn hình.',
+        ),
         action: SnackBarAction(
           label: 'Bật quyền nền',
           onPressed: () async {
@@ -229,6 +299,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       }
       if (!mounted) return;
       setState(() => _alertOnly = true);
+      _watchForFirstGpsFix();
       // Follow the GPS position (north-up) with the map SDK's own tracking, so
       // the puck and camera move with every fix.
       _fireAndForget(_controller?.recenter());
@@ -294,6 +365,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _fireAndForget(_controller?.finishNavigation());
     }
     if (_alertOnly) {
+      _gpsWaitTimer?.cancel();
       await alert.stop();
     }
     if (!mounted) {
@@ -378,7 +450,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _currentLocation = latLng;
       return latLng;
     } on TimeoutException {
-      _snack('Hết thời gian chờ GPS. Thử lại ngoài trời hoặc đặt vị trí giả lập.');
+      _snack(
+        'Hết thời gian chờ GPS. Thử lại ngoài trời hoặc đặt vị trí giả lập.',
+      );
       return null;
     } catch (e) {
       _snack('Không lấy được vị trí: $e');
@@ -436,11 +510,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
 
     context.read<AlertController>().injectLocation(
-          lat: loc!.latitude!.toDouble(),
-          lng: loc.longitude!.toDouble(),
-          bearing: loc.bearing?.toDouble() ?? 0,
-          speedKmh: speedKmh,
-        );
+      lat: loc!.latitude!.toDouble(),
+      lng: loc.longitude!.toDouble(),
+      bearing: loc.bearing?.toDouble() ?? 0,
+      speedKmh: speedKmh,
+    );
   }
 
   // ── Sheets & dialogs ────────────────────────────────────────────────────────
@@ -460,6 +534,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final result = await showDialog<SettingsResult>(
       context: context,
       builder: (_) => SettingsDialog(
+        identity: alert.identity,
+        signedIn: alert.signedIn,
         vehicle: alert.vehicle,
         simulate: _simulate,
         speedMultiplier: _speedMultiplier,
@@ -473,15 +549,59 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
     _options.simulateRoute = result.simulate;
 
-    // Re-configuring the vehicle rebuilds the native manager, so the next GPS
-    // update refetches the zone for the new profile.
-    await alert.applyVehicle(result.vehicle);
+    if (result.signOut) {
+      final outcome = await alert.logout();
+      _snack(
+        outcome.success
+            ? 'Đã đăng xuất.'
+            : 'Đã ngừng tải dữ liệu, nhưng chưa báo được máy chủ '
+                  '(mã ${outcome.errorCode}). Thử đăng xuất lại sau.',
+      );
+      return;
+    }
+
+    // Re-configuring rebuilds the native manager, so the next GPS update
+    // refetches the zone for the new identity / profile.
+    try {
+      await alert.applySettings(result.vehicle, result.identity);
+    } on PlatformException catch (e) {
+      _snack('Cấu hình bị từ chối: ${e.message ?? e.code}');
+    }
+  }
+
+  /// The engine loads a zone only once a position reaches it, so in GPS-only
+  /// mode no fix means nothing ever loads. Say so instead of leaving the user
+  /// on "Đang tải dữ liệu vùng…".
+  void _watchForFirstGpsFix() {
+    _gpsWaitTimer?.cancel();
+    _gpsWaitTimer = Timer(_gpsWaitTimeout, () {
+      if (!mounted || !_alertOnly) return;
+      if (context.read<AlertController>().location != null) return;
+      _snack(
+        'Chưa nhận được tín hiệu GPS sau ${_gpsWaitTimeout.inSeconds} giây. '
+        'Ra chỗ thoáng, hoặc bật "Vị trí chính xác" cho ứng dụng.',
+      );
+    });
+  }
+
+  String _engineStatus(_EngineStatusState state) {
+    final configurationError = state.configurationError;
+    if (configurationError != null) return 'Cấu hình lỗi: $configurationError';
+    if (!state.signedIn) return 'Chưa đăng nhập — mở Cài đặt';
+    // GPS-only mode: no fix yet, so no zone request has even been made.
+    if (_alertOnly && !state.hasGpsFix) return 'Đang chờ tín hiệu GPS…';
+    final lastError = state.lastError;
+    if (lastError != null) {
+      return 'Lỗi ${lastError.errorCode}: ${lastError.errorMessage ?? 'không rõ'}';
+    }
+    final ready = state.ready;
+    if (ready == null) return 'Đang tải dữ liệu vùng…';
+    return 'Sẵn sàng — ${ready.linkCount} links, ${ready.alertCount} alerts';
   }
 
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   // ── Build ───────────────────────────────────────────────────────────────────
@@ -519,11 +639,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           ),
 
           // Sign column, top-left.
-          Positioned(
-            top: topInset + 96,
-            left: 12,
-            child: const SignOverlay(),
-          ),
+          Positioned(top: topInset + 96, left: 12, child: const SignOverlay()),
 
           // Speed + status, top-right — only meaningful once the engine runs.
           // Restriction signs sit under it.
@@ -571,22 +687,26 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             left: 16,
             right: 16,
             bottom: bottomInset + 12,
-            // Only the engine-ready status inside the bar tracks the controller,
-            // and `ready` changes just once per zone reload — so a Selector on it
-            // keeps the per-tick storm away from this subtree entirely.
-            child: Selector<AlertController, ReadyEvent?>(
-              selector: (_, c) => c.ready,
-              builder: (_, ready, _) => BottomActionBar(
+            // Only the engine status inside the bar tracks the controller, and
+            // it changes just once per zone reload or configure — so a Selector
+            // on it keeps the per-tick storm away from this subtree entirely.
+            child: Selector<AlertController, _EngineStatusState>(
+              selector: (_, c) => (
+                ready: c.ready,
+                configurationError: c.configurationError,
+                signedIn: c.signedIn,
+                hasGpsFix: c.location != null,
+                lastError: c.lastError,
+              ),
+              builder: (_, state, _) => BottomActionBar(
                 running: _running,
                 busy: _buildingRoute,
                 hasDestination: _destination != null,
                 statusLine: _navigating
                     ? (_destinationLabel ?? 'Đang điều hướng')
                     : 'Cảnh báo tốc độ (GPS thật)',
-                engineReady: ready?.isReady ?? false,
-                engineStatus: ready == null
-                    ? 'Đang tải dữ liệu vùng…'
-                    : 'Sẵn sàng — ${ready.linkCount} links, ${ready.alertCount} alerts',
+                engineReady: state.ready?.isReady ?? false,
+                engineStatus: _engineStatus(state),
                 onStart: _start,
                 onStop: _stop,
               ),
@@ -597,3 +717,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
   }
 }
+
+/// What the bottom status line shows. A record, so the Selector rebuilds only
+/// when one of these actually changes — not on every GPS tick.
+typedef _EngineStatusState = ({
+  ReadyEvent? ready,
+  String? configurationError,
+  bool signedIn,
+  bool hasGpsFix,
+  AlertResult? lastError,
+});
